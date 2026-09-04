@@ -1,0 +1,355 @@
+---
+title: "Seurat: the standard scRNA-seq workflow"
+subtitle: "CMM 523 — Crash Course in Single-cell Genomics Analysis"
+format:
+  gfm:
+    toc: true
+    toc-depth: 2
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  cache: true
+knitr:
+  opts_chunk:
+    fig.path: "figs/01_seurat_intro-"
+    comment: "#>"
+---
+
+This tutorial walks through the standard Seurat workflow on a dataset of 2,700
+peripheral blood mononuclear cells (PBMCs) sequenced on the 10x Genomics
+platform. By the end you will have gone from a raw count matrix to annotated
+cell types on a UMAP.
+
+Everything here runs inside the course container. If you have not built it yet,
+go back to the in-class assignment before starting.
+
+## Setup
+
+Set a working directory on `/xdisk`. Replace the NetID if you are working
+somewhere else.
+
+```{r}
+#| label: setup
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", Sys.info()[["user"]], "seurat_intro")
+dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+```
+
+## Get the data
+
+The PBMC dataset is distributed by 10x Genomics as a gzipped tarball. This only
+downloads if the file is not already present, so it is safe to re-run.
+
+```{r}
+#| label: download
+tarball <- file.path(WORK, "pbmc3k_filtered_gene_bc_matrices.tar.gz")
+
+if (!file.exists(tarball)) {
+  download.file(
+    "https://cf.10xgenomics.com/samples/cell/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz",
+    tarball, mode = "wb"
+  )
+  untar(tarball, exdir = WORK)
+}
+
+list.files(file.path(WORK, "filtered_gene_bc_matrices", "hg19"))
+```
+
+Three files: `barcodes.tsv`, `genes.tsv`, and `matrix.mtx`. This is the standard
+Cell Ranger output format — a sparse matrix plus the row and column names for
+it.
+
+## Build a Seurat object
+
+`Read10X()` reads those three files into a sparse matrix of counts, with genes
+as rows and cells as columns.
+
+```{r}
+#| label: read10x
+pbmc.data <- Read10X(data.dir = file.path(WORK, "filtered_gene_bc_matrices", "hg19"))
+
+pbmc <- CreateSeuratObject(
+  counts = pbmc.data,
+  project = "pbmc3k",
+  min.cells = 3,
+  min.features = 200
+)
+
+pbmc
+```
+
+The two filters do different things. `min.cells = 3` drops genes detected in
+fewer than three cells — these carry almost no information and slow everything
+down. `min.features = 200` drops cells with fewer than 200 genes detected, which
+are usually empty droplets or dying cells.
+
+## Quality control
+
+The standard QC metrics are the number of genes per cell, the number of UMIs per
+cell, and the percentage of reads coming from mitochondrial genes. High
+mitochondrial content usually means a dying or lysed cell, whose cytoplasmic RNA
+has leaked out.
+
+`PercentageFeatureSet()` computes the percentage of counts belonging to a set of
+genes. In human data mitochondrial genes are prefixed `MT-`.
+
+```{r}
+#| label: qc-metrics
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+head(pbmc@meta.data, 5)
+```
+
+```{r}
+#| label: qc-violin
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r}
+#| label: qc-scatter
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+The scatter plots are worth reading carefully. `nCount_RNA` against
+`nFeature_RNA` should be tightly correlated — cells with more UMIs detect more
+genes. Points falling below that line are suspicious.
+
+Now filter. These thresholds are specific to this dataset; they are not
+universal constants.
+
+```{r}
+#| label: qc-filter
+pbmc <- subset(
+  pbmc,
+  subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5
+)
+
+pbmc
+```
+
+## Normalization
+
+Cells differ in sequencing depth, so raw counts are not comparable between them.
+The default normalization divides each count by the total counts for that cell,
+multiplies by 10,000, and log-transforms the result.
+
+```{r}
+#| label: normalize
+pbmc <- NormalizeData(pbmc)
+```
+
+## Variable features
+
+Most genes are not informative for distinguishing cell types. Restricting to the
+genes that vary most across cells sharpens the downstream structure and cuts the
+computation substantially.
+
+```{r}
+#| label: variable-features
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+top10 <- head(VariableFeatures(pbmc), 10)
+top10
+```
+
+```{r}
+#| label: variable-feature-plot
+plot1 <- VariableFeaturePlot(pbmc)
+LabelPoints(plot = plot1, points = top10, repel = TRUE)
+```
+
+Notice what comes out on top: PPBP (platelets), LYZ (monocytes), GNLY and GNG11.
+These are marker genes for specific populations, which is exactly what you would
+hope a variance-based selection would find.
+
+## Scaling
+
+PCA requires that genes be centered and scaled, otherwise highly expressed genes
+dominate purely because of their magnitude.
+
+```{r}
+#| label: scale
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+```
+
+## Linear dimensional reduction
+
+```{r}
+#| label: pca
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+
+print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+```{r}
+#| label: pca-loadings
+VizDimLoadings(pbmc, dims = 1:2, reduction = "pca")
+```
+
+```{r}
+#| label: pca-dimplot
+DimPlot(pbmc, reduction = "pca") + NoLegend()
+```
+
+`DimHeatmap()` is a useful way to judge how many components carry real signal.
+Each panel shows the cells and genes with the most extreme loadings on that
+component, ordered. A component with clear block structure is capturing
+something; one that looks like noise probably is.
+
+```{r}
+#| label: dimheatmap-1
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+```
+
+```{r}
+#| label: dimheatmap-many
+#| fig-height: 14
+DimHeatmap(pbmc, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+The elbow plot ranks components by the variance they explain. The "elbow" — the
+point where the curve flattens — is a rough guide to how many to keep.
+
+```{r}
+#| label: elbow
+ElbowPlot(pbmc)
+```
+
+There is an elbow around PC 9–10 here. We will use 10. This choice is a judgment
+call, and it is worth checking that your conclusions do not depend heavily on it.
+
+## Clustering
+
+Seurat clusters cells by building a shared nearest neighbor graph and then
+partitioning it. The `resolution` parameter controls granularity: higher values
+give more clusters.
+
+```{r}
+#| label: cluster
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+
+head(Idents(pbmc), 5)
+```
+
+```{r}
+#| label: umap
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+DimPlot(pbmc, reduction = "umap")
+```
+
+## Finding marker genes
+
+A cluster is only useful if you can say what it is. `FindAllMarkers()` tests
+each cluster against all the others and returns the genes that distinguish it.
+
+```{r}
+#| label: markers
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE)
+
+pbmc.markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 3) %>%
+  ungroup()
+```
+
+You can also test specific comparisons. Here, cluster 5 against clusters 0 and 3:
+
+```{r}
+#| label: markers-specific
+cluster5.markers <- FindMarkers(pbmc, ident.1 = 5, ident.2 = c(0, 3))
+head(cluster5.markers, n = 5)
+```
+
+Plotting known markers across the UMAP is the quickest way to orient yourself.
+
+```{r}
+#| label: feature-plot
+#| fig-height: 10
+FeaturePlot(pbmc, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A",
+                               "FCGR3A", "LYZ", "PPBP", "CD8A"))
+```
+
+```{r}
+#| label: marker-heatmap
+#| fig-height: 10
+pbmc.markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top10_markers
+
+DoHeatmap(pbmc, features = top10_markers$gene) + NoLegend()
+```
+
+## Assigning cell type identities
+
+With canonical markers in hand, the clusters can be named. This mapping is
+specific to this dataset at this resolution — if your clustering differs, so
+will the numbering.
+
+| Cluster | Markers | Cell type |
+|---|---|---|
+| 0 | IL7R, CCR7 | Naive CD4 T |
+| 1 | CD14, LYZ | CD14+ Mono |
+| 2 | IL7R, S100A4 | Memory CD4 T |
+| 3 | MS4A1 | B |
+| 4 | CD8A | CD8 T |
+| 5 | FCGR3A, MS4A7 | FCGR3A+ Mono |
+| 6 | GNLY, NKG7 | NK |
+| 7 | FCER1A, CST3 | DC |
+| 8 | PPBP | Platelet |
+
+```{r}
+#| label: annotate
+new.cluster.ids <- c("Naive CD4 T", "CD14+ Mono", "Memory CD4 T", "B",
+                     "CD8 T", "FCGR3A+ Mono", "NK", "DC", "Platelet")
+
+stopifnot(length(new.cluster.ids) == length(levels(pbmc)))
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+
+DimPlot(pbmc, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+```
+
+## Save your work
+
+```{r}
+#| label: save
+plot <- DimPlot(pbmc, reduction = "umap", label = TRUE, label.size = 4.5) +
+  xlab("UMAP 1") + ylab("UMAP 2") +
+  theme(axis.title = element_text(size = 18),
+        legend.text = element_text(size = 18)) +
+  guides(colour = guide_legend(override.aes = list(size = 10)))
+
+ggsave(file.path(WORK, "output", "pbmc3k_umap.jpg"),
+       plot = plot, height = 7, width = 12)
+
+saveRDS(pbmc, file = file.path(WORK, "output", "pbmc3k_final.rds"))
+```
+
+Keep that `.rds`. Several later tutorials start from a processed object, and
+re-running this one takes long enough to be annoying.
+
+## Session information
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+---
+
+*Adapted from the [Seurat PBMC3K guided
+tutorial](https://satijalab.org/seurat/articles/pbmc3k_tutorial.html)
+(Satija Lab), updated for Seurat 5 and R 4.6.*

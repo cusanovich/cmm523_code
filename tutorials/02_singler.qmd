@@ -1,0 +1,256 @@
+---
+title: "SingleR: automated cell type annotation"
+subtitle: "CMM 523 — Crash Course in Single-cell Genomics Analysis"
+format:
+  gfm:
+    toc: true
+    toc-depth: 2
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  cache: true
+knitr:
+  opts_chunk:
+    fig.path: "figs/02_singler-"
+    comment: "#>"
+---
+
+In the [Seurat intro](01_seurat_intro.md) you annotated clusters by hand: look
+up canonical markers, decide what each cluster is, type in the names. That works,
+but it is slow, it requires you to already know the markers, and it is hard to
+defend when someone asks why cluster 4 is a CD8 T cell and not something else.
+
+SingleR takes a different approach. Given a reference dataset of known cell
+types, it correlates each of your cells against that reference and assigns the
+best match. It annotates **cells**, not clusters, which means you can also use it
+to check whether your clustering is carving the data at sensible joints.
+
+## Setup
+
+```{r}
+#| label: setup
+library(Seurat)
+library(SingleR)
+library(celldex)
+library(scRNAseq)
+library(scran)
+library(pheatmap)
+library(viridis)
+library(ggplot2)
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", Sys.info()[["user"]], "singler")
+dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+```
+
+## Get a reference
+
+`celldex` provides several curated reference datasets. The Human Primary Cell
+Atlas is a good general-purpose starting point for blood and immune data.
+
+The first call downloads and caches the reference, which takes a minute. The
+cache location is set by the container, so it lands on `/xdisk` rather than in
+your home directory.
+
+```{r}
+#| label: reference
+ref <- celldex::HumanPrimaryCellAtlasData()
+ref
+```
+
+Each reference has two label columns. `label.main` is coarse (T cell, B cell,
+monocyte); `label.fine` is granular (naive CD4 T, memory CD8 T, and so on).
+Which you want depends on the question.
+
+```{r}
+#| label: reference-labels
+table(ref$label.main)[1:15]
+```
+
+The Human Primary Cell Atlas covers many tissues, most of which are irrelevant
+for PBMCs. Subsetting to the relevant lineages makes the assignment both faster
+and more accurate — a reference full of hepatocytes gives SingleR opportunities
+to be wrong in uninteresting ways.
+
+```{r}
+#| label: subset-reference
+keep <- grepl("DC|B_cell|T_cells|Monocyte|NK_cell|^HSC_CD34", ref$label.main)
+ref <- ref[, keep]
+
+table(ref$label.main)
+```
+
+## Get some data to annotate
+
+We will use a PBMC dataset from `scRNAseq` rather than the object from the last
+tutorial, so this tutorial stands alone.
+
+```{r}
+#| label: test-data
+sce <- scRNAseq::KotliarovPBMCData()
+sce
+```
+
+SingleR expects log-normalized expression, so normalize first.
+
+```{r}
+#| label: normalize
+sce <- scran::computeSumFactors(sce)
+sce <- scuttle::logNormCounts(sce)
+```
+
+## Run SingleR
+
+```{r}
+#| label: singler-main
+pred.main <- SingleR(
+  test = sce,
+  ref = ref,
+  labels = ref$label.main,
+  de.method = "wilcox"
+)
+
+table(pred.main$pruned.labels, useNA = "ifany")
+```
+
+The `de.method = "wilcox"` argument tells SingleR to pick marker genes by
+Wilcoxon test rather than the default t-test. This is the recommended setting
+for single-cell references.
+
+`pruned.labels` is the important column. SingleR assigns every cell a label, but
+then prunes assignments where the score is not meaningfully better than the
+alternatives. Those become `NA`. A cell with `NA` is one SingleR is not confident
+about, which is more useful than a confident wrong answer.
+
+## Assess the assignments
+
+The score heatmap shows, for each cell, how well it matched every label in the
+reference. Good assignments look like a single bright band.
+
+```{r}
+#| label: score-heatmap
+#| fig-height: 7
+plotScoreHeatmap(pred.main)
+```
+
+The delta distribution is the gap between the best score and the median score
+for each cell. Small deltas mean the cell matched everything about equally well,
+which is a warning sign.
+
+```{r}
+#| label: delta-plot
+#| fig-height: 7
+plotDeltaDistribution(pred.main, ncol = 4, dots.on.top = FALSE)
+```
+
+## Fine-grained labels
+
+```{r}
+#| label: singler-fine
+pred.fine <- SingleR(
+  test = sce,
+  ref = ref,
+  labels = ref$label.fine,
+  de.method = "wilcox"
+)
+
+head(sort(table(pred.fine$pruned.labels, useNA = "ifany"), decreasing = TRUE), 15)
+```
+
+Fine labels are more informative and less reliable. Distinguishing naive from
+central memory CD4 T cells from transcriptome alone is genuinely hard, and the
+pruning is correspondingly more aggressive. Use fine labels when you need the
+resolution, and check the delta plot before you trust them.
+
+## Comparing SingleR to your clusters
+
+This is where SingleR earns its keep. If you have already clustered your data,
+cross-tabulating clusters against SingleR labels tells you whether the clusters
+correspond to recognizable cell types.
+
+```{r}
+#| label: crosstab
+sce$singler.main <- pred.main$pruned.labels
+
+# Quick clustering for the comparison
+set.seed(100)
+sce <- scater::runPCA(sce, ncomponents = 20)
+clust <- scran::clusterCells(sce, use.dimred = "PCA")
+sce$cluster <- clust
+
+tab <- table(cluster = sce$cluster, label = sce$singler.main)
+tab
+```
+
+```{r}
+#| label: crosstab-heatmap
+#| fig-height: 7
+pheatmap(log10(tab + 10), color = viridis::viridis(100))
+```
+
+Read this heatmap carefully, because it is diagnostic in both directions. A
+cluster that maps cleanly onto one label is well behaved. A cluster spread
+across several labels may be under-clustered. Several clusters mapping to the
+same label may mean you over-clustered, or may mean there is real substructure
+the reference cannot name.
+
+The single most useful summary is the dominant label per cluster:
+
+```{r}
+#| label: dominant-label
+apply(tab, 1, function(x) names(which.max(x)))
+```
+
+## Adding labels to a Seurat object
+
+If you are working in Seurat rather than `SingleCellExperiment`, the pattern is
+the same — extract normalized data, run SingleR, add the result as metadata.
+
+```{r}
+#| label: seurat-pattern
+#| eval: false
+norm_counts <- LayerData(seurat_obj, assay = "RNA", layer = "data")
+
+pred <- SingleR(test = norm_counts, ref = ref,
+                labels = ref$label.main, de.method = "wilcox")
+
+seurat_obj <- AddMetaData(seurat_obj, pred$pruned.labels,
+                          col.name = "SingleR_label")
+
+DimPlot(seurat_obj, group.by = "SingleR_label", label = TRUE) + NoLegend()
+```
+
+Note `LayerData()` rather than `GetAssayData(slot = "data")`. In Seurat 5 the
+term is "layer" rather than "slot", and the old argument is deprecated.
+
+## A caution about references
+
+SingleR is only as good as its reference, and this is not a minor caveat. If
+your cells are a type the reference does not contain, SingleR will still assign
+them a label — the closest available match, confidently or not. Tumor cells
+annotated against a healthy-tissue reference are a classic way to get
+nonsense that looks authoritative.
+
+Always check the delta distribution, always look at what fraction of cells got
+pruned to `NA`, and treat a label as a hypothesis rather than a fact.
+
+## Save your work
+
+```{r}
+#| label: save
+saveRDS(pred.main, file = file.path(WORK, "output", "singler_main.rds"))
+saveRDS(pred.fine, file = file.path(WORK, "output", "singler_fine.rds"))
+```
+
+## Session information
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+---
+
+*Adapted from the [SingleR book](https://bioconductor.org/books/release/SingleRBook/)
+and the biostatsquid SingleR tutorial, updated for Bioconductor 3.23 and R 4.6.*
