@@ -35,13 +35,27 @@ library(Seurat)
 library(SingleR)
 library(celldex)
 library(scRNAseq)
-library(scran)
 library(pheatmap)
 library(viridis)
 library(ggplot2)
 
-WORK <- file.path("/xdisk/darrenc/cmm_523", Sys.info()[["user"]], "singler")
+# CHANGE THIS to your NetID.
+NETID <- "your_netid"
+
+if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "singler")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+
+# Rendering only: keep the multi-GB knitr cache off /home.
+knitr::opts_chunk$set(
+  cache.path = file.path(
+    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
+    "02_singler/"
+  )
+)
+
+WORK
 ```
 
 ## Get a reference
@@ -92,20 +106,27 @@ sce <- scRNAseq::KotliarovPBMCData()
 sce
 ```
 
-SingleR expects log-normalized expression, so normalize first.
+SingleR expects log-normalized expression. The dataset arrives as a
+`SingleCellExperiment`, but since the rest of this course works in Seurat, we
+will convert it and normalize the Seurat way. SingleR does not care which
+object the matrix came from.
 
 ```{r}
-#| label: normalize
-sce <- scran::computeSumFactors(sce)
-sce <- scuttle::logNormCounts(sce)
+#| label: to-seurat
+pbmc <- CreateSeuratObject(counts = counts(sce), project = "kotliarov")
+pbmc <- NormalizeData(pbmc)
+
+pbmc
 ```
 
 ## Run SingleR
 
 ```{r}
 #| label: singler-main
+norm_counts <- LayerData(pbmc, assay = "RNA", layer = "data")
+
 pred.main <- SingleR(
-  test = sce,
+  test = norm_counts,
   ref = ref,
   labels = ref$label.main,
   de.method = "wilcox"
@@ -149,7 +170,7 @@ plotDeltaDistribution(pred.main, ncol = 4, dots.on.top = FALSE)
 ```{r}
 #| label: singler-fine
 pred.fine <- SingleR(
-  test = sce,
+  test = norm_counts,
   ref = ref,
   labels = ref$label.fine,
   de.method = "wilcox"
@@ -171,15 +192,16 @@ correspond to recognizable cell types.
 
 ```{r}
 #| label: crosstab
-sce$singler.main <- pred.main$pruned.labels
+pbmc <- AddMetaData(pbmc, pred.main$pruned.labels, col.name = "SingleR_main")
 
-# Quick clustering for the comparison
-set.seed(100)
-sce <- scater::runPCA(sce, ncomponents = 20)
-clust <- scran::clusterCells(sce, use.dimred = "PCA")
-sce$cluster <- clust
+# A quick standard clustering to compare against
+pbmc <- FindVariableFeatures(pbmc, nfeatures = 2000)
+pbmc <- ScaleData(pbmc)
+pbmc <- RunPCA(pbmc, npcs = 20)
+pbmc <- FindNeighbors(pbmc, dims = 1:20)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
 
-tab <- table(cluster = sce$cluster, label = sce$singler.main)
+tab <- table(cluster = pbmc$seurat_clusters, label = pbmc$SingleR_main)
 tab
 ```
 
@@ -202,26 +224,24 @@ The single most useful summary is the dominant label per cluster:
 apply(tab, 1, function(x) names(which.max(x)))
 ```
 
-## Adding labels to a Seurat object
-
-If you are working in Seurat rather than `SingleCellExperiment`, the pattern is
-the same — extract normalized data, run SingleR, add the result as metadata.
+## Labels on a UMAP
 
 ```{r}
-#| label: seurat-pattern
-#| eval: false
-norm_counts <- LayerData(seurat_obj, assay = "RNA", layer = "data")
+#| label: umap-labels
+#| fig-height: 7
+pbmc <- RunUMAP(pbmc, dims = 1:20)
 
-pred <- SingleR(test = norm_counts, ref = ref,
-                labels = ref$label.main, de.method = "wilcox")
+p1 <- DimPlot(pbmc, group.by = "seurat_clusters", label = TRUE) +
+  NoLegend() + ggtitle("Seurat clusters")
+p2 <- DimPlot(pbmc, group.by = "SingleR_main", label = TRUE, label.size = 3) +
+  NoLegend() + ggtitle("SingleR labels")
 
-seurat_obj <- AddMetaData(seurat_obj, pred$pruned.labels,
-                          col.name = "SingleR_label")
-
-DimPlot(seurat_obj, group.by = "SingleR_label", label = TRUE) + NoLegend()
+p1 + p2
 ```
 
-Note `LayerData()` rather than `GetAssayData(slot = "data")`. In Seurat 5 the
+One detail worth noting in the code above: we pulled the expression matrix with
+`LayerData(pbmc, assay = "RNA", layer = "data")`. If you find older code using
+`GetAssayData(slot = "data")`, that is the Seurat 4 spelling — in Seurat 5 the
 term is "layer" rather than "slot", and the old argument is deprecated.
 
 ## A caution about references

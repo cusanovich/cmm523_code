@@ -25,8 +25,9 @@ it yet, go back to the in-class assignment before starting.
 
 ## Setup
 
-Set a working directory on `/xdisk`. Replace the NetID if you are
-working somewhere else.
+Before you run anything, change `NETID` below to your own NetID.
+Everything this tutorial writes goes into your own directory under the
+course space on `/xdisk`.
 
 ``` r
 library(Seurat)
@@ -34,9 +35,26 @@ library(dplyr)
 library(patchwork)
 library(ggplot2)
 
-WORK <- file.path("/xdisk/darrenc/cmm_523", Sys.info()[["user"]], "seurat_intro")
+# CHANGE THIS to your NetID.
+NETID <- "your_netid"
+
+if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "seurat_intro")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+
+# Rendering only: keep the multi-GB knitr cache off /home.
+knitr::opts_chunk$set(
+  cache.path = file.path(
+    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
+    "01_seurat_intro/"
+  )
+)
+
+WORK
 ```
+
+    #> [1] "/xdisk/darrenc/cmm_523/darrenc/seurat_intro"
 
 ## Get the data
 
