@@ -2,3 +2,5 @@
 *_files/
 *.rmarkdown
 .Rproj.user/
+github_pat.txt
+*.log

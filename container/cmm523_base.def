@@ -1,0 +1,250 @@
+Bootstrap: docker
+From: bioconductor/bioconductor_docker:RELEASE_3_23
+
+# ============================================================================
+# CMM 523 BASE IMAGE -- the image students bootstrap their own layers from
+# Course container: R 4.6 / Bioconductor 3.23 + Quarto
+#
+# Build on a Puma COMPUTE node (apptainer is not on login nodes):
+#
+#   interactive -a cusanovichlab -n 8 -t 04:00:00
+#   export APPTAINER_CACHEDIR=/xdisk/darrenc/cmm_523/.apptainer_cache
+#   export APPTAINER_TMPDIR=/xdisk/darrenc/cmm_523/.apptainer_tmp
+#   sbatch build_layer.sbatch cmm523_base.def cmm523_base.sif
+#
+# REQUIRES github_pat.txt in the same directory as this recipe (see %files).
+# That file must NOT be committed -- it is in .gitignore.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS IN HERE, AND WHY
+#
+# This image contains what is expensive or slow but is not a teaching target:
+#   - R, Quarto, system libraries, BiocManager, remotes
+#   - shared Bioconductor infrastructure
+#   - monocle3, which compiles BPCells, sf, spdep and leidenbase from source
+#     and takes the better part of an hour on its own
+#
+# monocle3 is the ONLY GitHub package here, deliberately. It does not import
+# Seurat, so pre-baking it does not drag Seurat in. Every other GitHub package
+# in this course (SeuratDisk, SeuratData, presto, SeuratWrappers) DOES import
+# Seurat -- installing those here would install Seurat as a side effect and
+# take week 2's exercise away.
+#
+# Students install the rest themselves, in weekly layers bootstrapped from this
+# image, each one motivated by that week's homework:
+#   week 2  Seurat; PAT setup; presto (their first GitHub install)
+#   week 3  harmony, SingleR, celldex, scRNAseq, scrapper, SeuratData
+#   week 4  edgeR, statmod, SeuratWrappers
+#   week 6  Signac, EnsDb.Hsapiens.v86, biovizBase
+#   week 7  chromVAR, motifmatchr, TFBSTools, JASPAR2024, BSgenome
+#
+# ---------------------------------------------------------------------------
+# WHY SOME THINGS ARE NOT HERE
+#
+# Deliberately dropped from the 2025 install list -- do not add back without
+# a reason:
+#   devtools     -> remotes does install_github with ~80 fewer dependencies
+#   sf, terra    -> declared monocle3 dependencies; were only explicit to
+#                   carry Ocelote's gdal configure.args
+#   lme4, batchelor, HDF5Array, ggrastr  -> declared monocle3 dependencies
+#   Rhdf5lib, rhdf5filters               -> pulled in by HDF5Array; never
+#                                           loaded by any tutorial
+#   Cairo, png                           -> never loaded by any tutorial
+#   Matrix/matrixStats/dbplyr/curl/openssl version pins
+#                -> all were R 4.2-era workarounds
+#
+# Deliberately kept explicit because they are Suggests, not Imports, and so
+# nothing installs them for you:
+#   glmGamPoi   -> SCTransform speed
+#   biovizBase  -> Signac CoveragePlot annotation tracks
+#   statmod     -> edgeR dispersion estimation
+#   R.utils     -> SeuratWrappers loads it at namespace load; remotes does NOT
+#                  resolve it automatically. Dropping this fails the build with
+#                  "there is no package called 'R.utils'" during SeuratWrappers
+#                  lazy loading. No tutorial calls library(R.utils) -- do not
+#                  let that fool you into removing it again.
+#
+# STYLE: every R step is written to a file with a heredoc and run with
+# Rscript. Do NOT convert back to inline `R -e '...'` with backslash line
+# continuations -- /bin/sh does not treat backslash-newline as a continuation
+# inside single quotes and R receives literal backslashes.
+# ============================================================================
+
+%labels
+    Course       CMM 523
+    Term         Fall 2026
+    R            4.6
+    Bioconductor 3.23
+    Maintainer   Darren Cusanovich
+
+%files
+    # Staged in /opt, NOT /tmp. Apptainer remounts /tmp between %files and
+    # %post, so anything copied there is gone by the time %post runs -- and
+    # $(cat) on a missing file fails silently, giving an empty token and a
+    # confusing rate-limit error an hour later.
+    #
+    # Read at build time, deleted at the end of %post. SIF is a single
+    # squashfs rather than stacked layers, so the deletion is real -- unlike
+    # Docker, where the file would survive in an earlier layer.
+    github_pat.txt /opt/github_pat.txt
+
+%post
+    set -e
+
+    export GITHUB_PAT=$(cat /opt/github_pat.txt)
+
+    # --- CHECK BEFORE BUILDING ----------------------------------------------
+    # https://github.com/quarto-dev/quarto-cli/releases
+    QUARTO_VERSION=1.7.32
+
+    # --- system libraries ---------------------------------------------------
+    # Nearly all of these are already in the Bioconductor base image. Listed
+    # so the recipe stands alone if the base image changes.
+    apt-get update && apt-get install -y --no-install-recommends \
+        libglpk-dev libgdal-dev libgeos-dev libproj-dev libudunits2-dev \
+        libhdf5-dev libcairo2-dev libmagick++-dev libfftw3-dev \
+        pandoc tree wget \
+        && rm -rf /var/lib/apt/lists/*
+
+    # --- Quarto -------------------------------------------------------------
+    wget -q -O /tmp/quarto.deb \
+        "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-amd64.deb"
+    dpkg -i /tmp/quarto.deb && rm /tmp/quarto.deb
+    quarto --version
+
+    # --- R startup configuration --------------------------------------------
+    # Renviron.site is read BEFORE R computes the library path, which is the
+    # only hook that reliably wins. Rprofile.site runs too late (rsession
+    # re-adds the user library after it), and --env never arrives at all
+    # (rserver spawns rsession through PAM, which rebuilds the environment).
+    #
+    # R_LIBS_USER: stops R constructing ~/R/x86_64-pc-linux-gnu-library/4.6 and
+    #   stops a stale R_LIBS in the bind-mounted ~/.Renviron from shadowing the
+    #   container's packages. CMM 522 has students write
+    #   R_LIBS=~/R/library_R_v4.5/ into ~/.Renviron; without this, R loads
+    #   4.5-built packages into 4.6 and dies with "undefined symbol: SETLENGTH".
+    #
+    # HTTPUserAgent: Posit Package Manager serves precompiled Ubuntu Noble
+    #   binaries from the same src/contrib path, selected by user agent.
+    #   Without this string you silently get source packages and a very long
+    #   build. Hardcoded because Renviron.site cannot run R code -- update it
+    #   if the R version changes.
+    cat > /usr/local/lib/R/etc/Renviron.site << 'RENVIRON'
+R_LIBS_USER=/usr/local/lib/R/site-library
+HTTPUserAgent="R/4.6.1 R (4.6.1 x86_64-pc-linux-gnu x86_64 linux-gnu)"
+RENVIRON
+
+    # Pin CRAN to a fixed Posit snapshot. This is what makes the image
+    # reproducible. Bump the date deliberately once a year; do not remove it.
+    # The __linux__/noble/ prefix is what enables binary packages.
+    # IMPORTANT: amend the repo list, do not replace it. Writing
+    # options(repos = c(CRAN = "...")) wipes out the Bioconductor repos the
+    # base image configures, which silently breaks any CRAN package that has
+    # Bioconductor imports -- Signac being the one in this course.
+    cat >> /usr/local/lib/R/etc/Rprofile.site << 'RPROFILE'
+local({
+  r <- getOption("repos")
+  r["CRAN"] <- "https://packagemanager.posit.co/cran/__linux__/noble/2026-08-01"
+  options(repos = r)
+})
+options(Ncpus = parallel::detectCores())
+RPROFILE
+
+    mkdir -p /opt/build
+
+    # --- rendering toolchain ------------------------------------------------
+    cat > /opt/build/01_render.R << 'EOF'
+install.packages(c("knitr", "rmarkdown", "downlit", "xml2", "jsonlite"))
+EOF
+    Rscript /opt/build/01_render.R
+
+    # --- CRAN ---------------------------------------------------------------
+    cat > /opt/build/02_cran.R << 'EOF'
+# Base only. Seurat and harmony are deliberately absent -- students install
+# those. tidyverse/patchwork/etc are here because every tutorial needs them
+# from week 2 onward and they are not the teaching target.
+install.packages(c(
+  "remotes", "BiocManager",
+  "tidyverse", "patchwork", "cowplot",
+  "viridis", "pheatmap", "RSQLite", "R.utils"
+))
+EOF
+    Rscript /opt/build/02_cran.R
+
+    # --- Bioconductor dependencies only -------------------------------------
+    # Not the packages students install, but the heavy shared infrastructure
+    # their installs will need. Pre-baking these keeps student layer builds to
+    # a few minutes.
+    cat > /opt/build/03_bioc_deps.R << 'EOF'
+BiocManager::install(c(
+  "GenomicRanges", "SummarizedExperiment", "SingleCellExperiment",
+  "BiocParallel", "DelayedArray", "HDF5Array", "Rsamtools",
+  "AnnotationHub", "glmGamPoi"
+), ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/03_bioc_deps.R
+
+    # --- GitHub -------------------------------------------------------------
+    # monocle3 only. Needs GITHUB_PAT (set above) or the API rate limit
+    # rejects it. Pinned to a tag so a rebuild next year gets the same code;
+    # note that monocle3 pulls BPCells from GitHub HEAD regardless, which is a
+    # loose thread worth revisiting.
+    cat > /opt/build/06_github.R << 'EOF'
+# remotes resolves dependencies against getOption("repos"), which is CRAN-only
+# here -- BiocManager merges the Bioconductor repos dynamically rather than
+# storing them. Without this, a GitHub package with Bioconductor imports fails
+# to find its dependencies and is silently skipped.
+# Read the token directly rather than relying on the shell export. Both work;
+# doing both means a failure in either mechanism is not fatal.
+Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
+
+options(repos = BiocManager::repositories())
+cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
+
+remotes::install_github("cole-trapnell-lab/monocle3@v1.4.27", upgrade = "never")
+if (!requireNamespace("monocle3", quietly = TRUE)) stop("FAILED: monocle3")
+
+# Seurat must NOT be here. If it is, something above pulled it in as a
+# dependency and week 2's install exercise is gone.
+if (requireNamespace("Seurat", quietly = TRUE)) {
+  stop("Seurat was installed as a side effect -- check what pulled it in")
+}
+EOF
+    Rscript /opt/build/06_github.R
+
+    # --- verify the base ----------------------------------------------------
+    cat > /opt/build/07_verify_base.R << 'EOF'
+pkgs <- c("monocle3", "GenomicRanges", "SingleCellExperiment", "AnnotationHub",
+          "glmGamPoi", "R.utils", "knitr", "rmarkdown", "RSQLite",
+          "remotes", "BiocManager", "tidyverse")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING FROM BASE: ", paste(missing, collapse = ", "))
+cat("\n=== base layer complete ===\n")
+cat(R.version.string, "\n")
+cat("Bioconductor", as.character(BiocManager::version()), "\n")
+cat("Packages:", nrow(installed.packages()), "\n")
+EOF
+    Rscript /opt/build/07_verify_base.R
+
+    # --- remove the token ---------------------------------------------------
+    rm -f /opt/github_pat.txt
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export HUB_ROOT=${HUB_ROOT:-/xdisk/darrenc/cmm_523/hub_cache}
+    export EXPERIMENT_HUB_CACHE=$HUB_ROOT/ExperimentHub
+    export ANNOTATION_HUB_CACHE=$HUB_ROOT/AnnotationHub
+    export BFC_CACHE=$HUB_ROOT/BiocFileCache
+    export R_LIBS_USER=/usr/local/lib/R/site-library
+    export XDG_CACHE_HOME=${XDG_CACHE_HOME:-/tmp/quarto-cache}
+
+%runscript
+    exec R "$@"
+
+%help
+    CMM 523 base image: R 4.6, Bioconductor 3.23, Quarto, shared Bioconductor
+    infrastructure, and monocle3.
+
+    Students bootstrap their own weekly layers from this image with
+    "Bootstrap: localimage" and install everything else themselves.

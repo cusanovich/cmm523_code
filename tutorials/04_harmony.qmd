@@ -1,0 +1,295 @@
+---
+title: "Harmony: comparing integration methods"
+subtitle: "CMM 523 — Crash Course in Single-cell Genomics Analysis"
+format:
+  gfm:
+    toc: true
+    toc-depth: 2
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  cache: true
+knitr:
+  opts_chunk:
+    fig.path: "figs/04_harmony-"
+    comment: "#>"
+---
+
+In the [previous tutorial](03_integration.md) you integrated the pancreas data
+with CCA. That is one method among several, and the choice matters: methods
+differ in how aggressively they correct, how they scale to large datasets, and
+what they assume about your batches.
+
+Harmony is the most widely used alternative. It works in PCA space, iteratively
+nudging cells toward batch-mixed cluster centroids. It is fast, it scales well,
+and it corrects more aggressively than CCA — which is sometimes what you want
+and sometimes exactly what you don't.
+
+This tutorial runs both on the same data so you can see the difference rather
+than take anyone's word for it.
+
+## Before you start
+
+This tutorial needs about **24 GB of memory** and runs in **30–40 minutes**.
+
+```bash
+interactive -a cusanovichlab -n 8 -t 03:00:00 --mem=32G
+```
+
+## Setup
+
+```{r}
+#| label: setup
+#| cache: false
+library(Seurat)
+library(SeuratData)
+library(harmony)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+
+# CHANGE THIS to your NetID.
+NETID <- "your_netid"
+
+if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "harmony")
+dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+
+# SeuratData datasets live in a shared read-only library on /xdisk. They are
+# data, not code, so they sit outside the container -- baking a 200 MB dataset
+# into every image would be wasteful, and the container is meant to define your
+# software environment, not carry your data. If a dataset is missing from the
+# shared library, the fallback below installs it into your own space.
+SHARED_DATA <- "/xdisk/darrenc/cmm_523/references/Rdatalib"
+MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
+dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
+
+knitr::opts_chunk$set(
+  cache.path = file.path(
+    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
+    "04_harmony/"
+  )
+)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+WORK
+```
+
+## Data and baseline processing
+
+Same dataset as the integration tutorial, so the comparison is fair.
+
+```{r}
+#| label: data
+if (!requireNamespace("panc8.SeuratData", quietly = TRUE)) {
+  message("panc8 not found in the shared library; downloading (117 MB)...")
+  InstallData("panc8")
+}
+data("panc8", package = "panc8.SeuratData")
+
+# panc8 was serialized under Seurat v3 and predates several slots that
+# Seurat 5 objects have. Loading it as-is fails with errors like
+# "no slot of name 'images'". UpdateSeuratObject() migrates it forward.
+# Any Seurat object you are handed from a paper, a collaborator, or an older
+# SeuratData package may need this -- objects do not migrate themselves.
+panc8 <- UpdateSeuratObject(panc8)
+
+panc8[["RNA"]] <- split(panc8[["RNA"]], f = panc8$tech)
+
+panc8 <- NormalizeData(panc8)
+panc8 <- FindVariableFeatures(panc8)
+panc8 <- ScaleData(panc8)
+panc8 <- RunPCA(panc8)
+
+panc8
+```
+
+## Running Harmony
+
+In Seurat 5, Harmony is available through the same `IntegrateLayers()` interface
+as CCA. Only the `method` argument changes.
+
+```{r}
+#| label: harmony
+panc8 <- IntegrateLayers(
+  object = panc8,
+  method = HarmonyIntegration,
+  orig.reduction = "pca",
+  new.reduction = "harmony",
+  verbose = FALSE
+)
+```
+
+That interchangeability is worth pausing on. Integration methods are not
+fundamentally different kinds of operation — they all take a dimensional
+reduction contaminated by batch and return one that is less so. Swapping one
+argument is the whole difference.
+
+You will also encounter `RunHarmony()` in the wild, which is harmony's own
+interface and still perfectly current:
+
+```{r}
+#| label: runharmony-alt
+#| eval: false
+panc8 <- RunHarmony(panc8, group.by.vars = "tech")
+```
+
+Both work. `IntegrateLayers()` is preferable here only because it makes the
+comparison below symmetric.
+
+## Running CCA for comparison
+
+```{r}
+#| label: cca
+panc8 <- IntegrateLayers(
+  object = panc8,
+  method = CCAIntegration,
+  orig.reduction = "pca",
+  new.reduction = "integrated.cca",
+  verbose = FALSE
+)
+```
+
+## Three embeddings, one object
+
+An advantage of the Seurat 5 design: multiple reductions coexist in the same
+object, so nothing has to be recomputed to compare them.
+
+```{r}
+#| label: embeddings
+panc8 <- RunUMAP(panc8, dims = 1:30, reduction = "pca",
+                 reduction.name = "umap.unintegrated")
+panc8 <- RunUMAP(panc8, dims = 1:30, reduction = "harmony",
+                 reduction.name = "umap.harmony")
+panc8 <- RunUMAP(panc8, dims = 1:30, reduction = "integrated.cca",
+                 reduction.name = "umap.cca")
+
+Reductions(panc8)
+```
+
+```{r}
+#| label: compare-tech
+#| fig-width: 15
+#| fig-height: 5
+p1 <- DimPlot(panc8, reduction = "umap.unintegrated", group.by = "tech") +
+  ggtitle("No integration") + NoLegend()
+p2 <- DimPlot(panc8, reduction = "umap.harmony", group.by = "tech") +
+  ggtitle("Harmony") + NoLegend()
+p3 <- DimPlot(panc8, reduction = "umap.cca", group.by = "tech") +
+  ggtitle("CCA")
+
+p1 + p2 + p3
+```
+
+```{r}
+#| label: compare-celltype
+#| fig-width: 15
+#| fig-height: 5
+p1 <- DimPlot(panc8, reduction = "umap.unintegrated", group.by = "celltype") +
+  ggtitle("No integration") + NoLegend()
+p2 <- DimPlot(panc8, reduction = "umap.harmony", group.by = "celltype") +
+  ggtitle("Harmony") + NoLegend()
+p3 <- DimPlot(panc8, reduction = "umap.cca", group.by = "celltype") +
+  ggtitle("CCA")
+
+p1 + p2 + p3
+```
+
+Look at both figures together. The first asks whether batches mixed; the second
+asks whether cell types stayed distinct. A method that wins the first and loses
+the second has not helped you.
+
+## Quantifying batch mixing
+
+Eyeballing UMAPs is a poor way to decide anything — UMAP distances are not
+meaningful and the layout depends on the seed. A crude but honest numeric check
+is to ask, for each cell, what fraction of its nearest neighbors come from a
+different batch. Well-mixed data gives a high fraction.
+
+```{r}
+#| label: mixing-metric
+neighbor_purity <- function(obj, reduction, batch_var = "tech", k = 30) {
+  emb <- Embeddings(obj, reduction)[, 1:30]
+  nn <- RANN::nn2(emb, k = k + 1)$nn.idx[, -1]
+  batch <- obj[[batch_var]][, 1]
+  mean(apply(nn, 1, function(idx) mean(batch[idx] != batch[1])))
+}
+
+data.frame(
+  reduction = c("pca", "harmony", "integrated.cca"),
+  cross_batch_neighbors = c(
+    neighbor_purity(panc8, "pca"),
+    neighbor_purity(panc8, "harmony"),
+    neighbor_purity(panc8, "integrated.cca")
+  )
+)
+```
+
+Higher is more mixed. Treat this as a rough diagnostic rather than a score to
+optimize — pushing it to 1.0 would mean the batches are indistinguishable, which
+is also what happens when you have destroyed the biology.
+
+## Clustering on each reduction
+
+```{r}
+#| label: cluster-both
+panc8 <- FindNeighbors(panc8, reduction = "harmony", dims = 1:30)
+panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "harmony_clusters")
+
+panc8 <- FindNeighbors(panc8, reduction = "integrated.cca", dims = 1:30)
+panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "cca_clusters")
+
+table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
+```
+
+A near-diagonal table means the two methods found essentially the same
+structure. Off-diagonal mass means they disagree about which cells belong
+together — and those cells are worth looking at, because they are where the
+method choice actually changes your conclusions.
+
+```{r}
+#| label: rejoin
+panc8 <- JoinLayers(panc8)
+```
+
+## Which should you use?
+
+There is no general answer, which is itself the point worth taking away.
+
+Harmony is fast and scales to very large datasets. It corrects aggressively,
+which helps with strong batch effects and hurts when your batches differ
+biologically — different treatments, different timepoints, different disease
+states. If a real biological difference happens to align with your batch
+structure, Harmony will remove it and the result will look clean.
+
+CCA is slower and more conservative. It tends to preserve batch-associated
+biology better, at the cost of leaving more technical variation behind.
+
+The honest workflow is the one this tutorial demonstrates: run more than one,
+compare, and check that your conclusions do not depend on which you picked. If
+they do, that is a finding about the fragility of your result, not a reason to
+pick the method that gives the answer you prefer.
+
+## Save your work
+
+```{r}
+#| label: save
+saveRDS(panc8, file = file.path(WORK, "output", "panc8_harmony_cca.rds"))
+```
+
+## Session information
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+---
+
+*Adapted from the [Harmony
+vignettes](https://portals.broadinstitute.org/harmony/) and the Seurat 5
+integration documentation.*

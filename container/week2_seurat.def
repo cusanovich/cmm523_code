@@ -1,0 +1,62 @@
+Bootstrap: localimage
+From: /xdisk/darrenc/cmm_523/containers/cmm523_base.sif
+
+# ============================================================================
+# CMM 523 -- Week 2 student layer: Seurat
+#
+# This recipe adds Seurat on top of the course base image. You will add one
+# layer like this each week, each bootstrapping from the previous one.
+#
+# BUILD IT (on a compute node -- apptainer is not available on login nodes):
+#
+#   interactive -a cusanovichlab -n 8 -t 02:00:00
+#   export APPTAINER_CACHEDIR=/xdisk/darrenc/cmm_523/<your_netid>/.cache
+#   export APPTAINER_TMPDIR=/xdisk/darrenc/cmm_523/<your_netid>/.tmp
+#   mkdir -p $APPTAINER_CACHEDIR $APPTAINER_TMPDIR
+#
+#   apptainer build /xdisk/darrenc/cmm_523/<your_netid>/week2.sif week2_seurat.def
+#
+# It should take a few minutes. Packages arrive precompiled from Posit Package
+# Manager, so almost nothing is built from source.
+#
+# USE IT:
+#   apptainer exec -B /xdisk /xdisk/darrenc/cmm_523/<your_netid>/week2.sif R
+#
+# ============================================================================
+
+%labels
+    Course CMM 523
+    Week   2
+    Adds   Seurat
+
+%post
+    set -e
+    mkdir -p /opt/build
+
+    # Everything is written to a file and run with Rscript rather than being
+    # passed inline with `R -e`. Inline commands with backslash line
+    # continuations do not work here: /bin/sh does not treat backslash-newline
+    # as a continuation inside single quotes, so R receives literal
+    # backslashes and fails to parse.
+    cat > /opt/build/week2.R << 'EOF'
+install.packages(c("Seurat", "SeuratObject"))
+EOF
+    Rscript /opt/build/week2.R
+
+    # Always verify. install.packages() does NOT return an error when a package
+    # fails to build -- it prints a warning and carries on. Without a check
+    # like this, a failed install looks like a successful build, and you find
+    # out when library() fails in the middle of your homework.
+    cat > /opt/build/verify.R << 'EOF'
+pkgs <- c("Seurat", "SeuratObject")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+cat("\n=== week 2 layer OK ===\n")
+cat("Seurat", as.character(packageVersion("Seurat")), "\n")
+EOF
+    Rscript /opt/build/verify.R
+
+%help
+    CMM 523 week 2: base image + Seurat.
+
+    apptainer exec -B /xdisk week2.sif R

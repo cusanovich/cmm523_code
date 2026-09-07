@@ -25,6 +25,20 @@ cell types on a UMAP.
 Everything here runs inside the course container. If you have not built it yet,
 go back to the in-class assignment before starting.
 
+## Before you start
+
+This tutorial needs about **8 GB of memory** and runs in **15–20 minutes**.
+Start an interactive session with:
+
+```bash
+interactive -a cusanovichlab -n 4 -t 02:00:00 --mem=16G
+```
+
+The default `interactive` gives you 1 CPU and 4 GB. When R runs out of memory on
+the cluster it is killed by the scheduler with no error message — the session
+simply stops mid-command. If that ever happens to you, here or anywhere else,
+memory is the first thing to check.
+
 ## Setup
 
 Before you run anything, change `NETID` below to your own NetID. Everything
@@ -33,6 +47,7 @@ this tutorial writes goes into your own directory under the course space on
 
 ```{r}
 #| label: setup
+#| cache: false
 library(Seurat)
 library(dplyr)
 library(patchwork)

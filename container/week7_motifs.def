@@ -1,0 +1,68 @@
+Bootstrap: localimage
+From: /xdisk/darrenc/cmm_523/<your_netid>/week6.sif
+
+# ============================================================================
+# CMM 523 -- Week 7 layer: motif analysis
+#
+# Adds: chromVAR, motifmatchr, TFBSTools, JASPAR2024,
+#       BSgenome.Hsapiens.UCSC.hg38   (Bioconductor)
+#       presto                        (GitHub)
+#
+# BSgenome.Hsapiens.UCSC.hg38 is the entire human genome sequence as an R
+# package -- roughly 700 MB. This is the longest student build of the course
+# and almost all of it is download time.
+#
+# BUILD IT:
+#   interactive -a cusanovichlab -n 8 -t 03:00:00
+#   apptainer build /xdisk/darrenc/cmm_523/<your_netid>/week7.sif week7_motifs.def
+# ============================================================================
+
+%labels
+    Course CMM 523
+    Week   7
+    Adds   chromVAR, motifmatchr, TFBSTools, JASPAR2024, BSgenome, presto
+
+%files
+    github_pat.txt /opt/github_pat.txt
+
+%post
+    set -e
+    mkdir -p /opt/build
+
+    cat > /opt/build/week7_bioc.R << 'EOF'
+BiocManager::install(c(
+  "chromVAR", "motifmatchr", "TFBSTools", "JASPAR2024",
+  "BSgenome.Hsapiens.UCSC.hg38"
+), ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/week7_bioc.R
+
+    cat > /opt/build/week7_github.R << 'EOF'
+Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
+options(repos = BiocManager::repositories())
+
+cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
+if (!nzchar(Sys.getenv("GITHUB_PAT"))) {
+  stop("No token found. Check that github_pat.txt is next to this recipe.")
+}
+
+# presto provides a fast Wilcoxon test. Seurat uses it automatically for
+# FindMarkers() when it is installed, and the WNN tutorial calls it directly.
+remotes::install_github("immunogenomics/presto", upgrade = "never")
+EOF
+    Rscript /opt/build/week7_github.R
+
+    cat > /opt/build/verify.R << 'EOF'
+pkgs <- c("chromVAR", "motifmatchr", "TFBSTools", "JASPAR2024",
+          "BSgenome.Hsapiens.UCSC.hg38", "presto")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+cat("\n=== week 7 layer OK -- this is the full course environment ===\n")
+cat("Packages installed:", nrow(installed.packages()), "\n")
+EOF
+    Rscript /opt/build/verify.R
+
+    rm -f /opt/github_pat.txt
+
+%help
+    CMM 523 week 7: adds motif analysis. This is the complete environment.

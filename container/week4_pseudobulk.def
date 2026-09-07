@@ -1,0 +1,50 @@
+Bootstrap: localimage
+From: /xdisk/darrenc/cmm_523/<your_netid>/week3.sif
+
+# ============================================================================
+# CMM 523 -- Week 4 layer: differential expression and trajectories
+#
+# Adds: edgeR, statmod   (Bioconductor)
+#
+# No GitHub packages and no token needed this week. The monocle3 tutorial uses
+# a small helper function (seurat_to_cds.R, in the tutorials directory) instead
+# of SeuratWrappers::as.cell_data_set(), which would drag in a large tree of
+# spatial-transcriptomics packages this course never touches.
+#
+# monocle3 is already in the base image. It compiles a large C++ dependency
+# tree from source and takes close to an hour on its own, so it is not
+# something to build in a class session.
+#
+# BUILD IT:
+#   interactive -a cusanovichlab -n 8 -t 02:00:00
+#   apptainer build /xdisk/darrenc/cmm_523/<your_netid>/week4.sif week4_pseudobulk.def
+# ============================================================================
+
+%labels
+    Course CMM 523
+    Week   4
+    Adds   edgeR, statmod
+
+%post
+    set -e
+    mkdir -p /opt/build
+
+    cat > /opt/build/week4_bioc.R << 'EOF'
+# statmod is a Suggests of edgeR, not an Imports, so nothing installs it for
+# you -- but estimateDisp() needs it. This is a recurring pattern worth
+# recognizing: a package can install cleanly and still be missing something
+# it needs at run time.
+BiocManager::install(c("edgeR", "statmod"), ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/week4_bioc.R
+
+    cat > /opt/build/verify.R << 'EOF'
+pkgs <- c("edgeR", "statmod", "monocle3")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+cat("\n=== week 4 layer OK ===\n")
+EOF
+    Rscript /opt/build/verify.R
+
+%help
+    CMM 523 week 4: adds edgeR. monocle3 is already in the base image.

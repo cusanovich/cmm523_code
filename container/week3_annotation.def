@@ -1,0 +1,90 @@
+Bootstrap: localimage
+From: /xdisk/darrenc/cmm_523/<your_netid>/week2.sif
+
+# ============================================================================
+# CMM 523 -- Week 3 layer: cell type annotation and integration
+#
+# Adds: harmony, SingleR, celldex, scRNAseq, scrapper  (Bioconductor + CRAN)
+#       SeuratData                                     (GitHub)
+#
+# This is the first week you install something from GitHub, which needs an
+# access token. See the in-class assignment for how to create one. Put it in
+# github_pat.txt in the same directory as this recipe, and make sure it is
+# readable only by you:
+#
+#   chmod 600 github_pat.txt
+#
+# NEVER commit that file to a repository. GitHub scans public repositories for
+# leaked tokens and revokes them automatically, which is a confusing way to
+# have your build stop working.
+#
+# BUILD IT:
+#   interactive -a cusanovichlab -n 8 -t 02:00:00
+#   apptainer build /xdisk/darrenc/cmm_523/<your_netid>/week3.sif week3_annotation.def
+# ============================================================================
+
+%labels
+    Course CMM 523
+    Week   3
+    Adds   harmony, SingleR, celldex, scRNAseq, scrapper, SeuratData
+
+%files
+    # Staged in /opt, NOT /tmp -- Apptainer remounts /tmp between %files and
+    # %post, so a file copied to /tmp is gone by the time %post runs.
+    github_pat.txt /opt/github_pat.txt
+
+%post
+    set -e
+    mkdir -p /opt/build
+
+    # --- CRAN and Bioconductor: no token needed -----------------------------
+    cat > /opt/build/week3_cran.R << 'EOF'
+install.packages("harmony")
+EOF
+    Rscript /opt/build/week3_cran.R
+
+    cat > /opt/build/week3_bioc.R << 'EOF'
+# scrapper is easy to miss: SingleR delegates its marker-gene selection to it,
+# but does not declare it as a hard dependency. Without it, SingleR installs
+# fine and then fails at run time with "there is no package called 'scrapper'".
+BiocManager::install(c(
+  "SingleR", "celldex", "scRNAseq", "scrapper"
+), ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/week3_bioc.R
+
+    # --- GitHub: needs the token --------------------------------------------
+    cat > /opt/build/week3_github.R << 'EOF'
+Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
+
+# remotes resolves dependencies against getOption("repos"), which is CRAN-only
+# by default. BiocManager merges the Bioconductor repos in dynamically, so
+# without this line any GitHub package with Bioconductor imports cannot find
+# its dependencies.
+options(repos = BiocManager::repositories())
+
+cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
+if (!nzchar(Sys.getenv("GITHUB_PAT"))) {
+  stop("No token found. Check that github_pat.txt is next to this recipe.")
+}
+
+remotes::install_github("satijalab/seurat-data", upgrade = "never")
+EOF
+    Rscript /opt/build/week3_github.R
+
+    # --- verify -------------------------------------------------------------
+    cat > /opt/build/verify.R << 'EOF'
+pkgs <- c("harmony", "SingleR", "celldex", "scRNAseq", "scrapper", "SeuratData")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+cat("\n=== week 3 layer OK ===\n")
+EOF
+    Rscript /opt/build/verify.R
+
+    # --- remove the token ---------------------------------------------------
+    # SIF is a single squashfs rather than stacked layers, so this deletion is
+    # real. In Docker the file would survive in an earlier layer.
+    rm -f /opt/github_pat.txt
+
+%help
+    CMM 523 week 3: adds annotation and integration packages.

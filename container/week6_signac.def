@@ -1,0 +1,53 @@
+Bootstrap: localimage
+From: /xdisk/darrenc/cmm_523/<your_netid>/week4.sif
+
+# ============================================================================
+# CMM 523 -- Week 6 layer: single-cell ATAC
+#
+# Adds: Signac, EnsDb.Hsapiens.v86, biovizBase   (all Bioconductor / CRAN)
+#
+# No GitHub packages this week, so no token needed.
+#
+# NOTE: Signac lives on CRAN but imports Rsamtools, sparseMatrixStats and other
+# Bioconductor packages. Installing it with plain install.packages() can fail
+# to find those, because the Bioconductor repositories are not in the default
+# repo list. BiocManager::install() handles both, which is why it is used here
+# for a CRAN package.
+#
+# BUILD IT:
+#   interactive -a cusanovichlab -n 8 -t 02:00:00
+#   apptainer build /xdisk/darrenc/cmm_523/<your_netid>/week6.sif week6_signac.def
+#
+# EnsDb.Hsapiens.v86 is a large annotation package -- expect this build to take
+# longer than the earlier ones, mostly spent downloading.
+# ============================================================================
+
+%labels
+    Course CMM 523
+    Week   6
+    Adds   Signac, EnsDb.Hsapiens.v86, biovizBase
+
+%post
+    set -e
+    mkdir -p /opt/build
+
+    cat > /opt/build/week6.R << 'EOF'
+# biovizBase is a Suggests of Signac, needed for the gene annotation track in
+# CoveragePlot(). Another install-fine-then-fail-later package.
+BiocManager::install(c(
+  "Signac", "EnsDb.Hsapiens.v86", "biovizBase"
+), ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/week6.R
+
+    cat > /opt/build/verify.R << 'EOF'
+pkgs <- c("Signac", "EnsDb.Hsapiens.v86", "biovizBase")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+cat("\n=== week 6 layer OK ===\n")
+cat("Signac", as.character(packageVersion("Signac")), "\n")
+EOF
+    Rscript /opt/build/verify.R
+
+%help
+    CMM 523 week 6: adds Signac and genome annotation for scATAC analysis.

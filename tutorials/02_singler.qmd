@@ -31,6 +31,7 @@ to check whether your clustering is carving the data at sensible joints.
 
 ```{r}
 #| label: setup
+#| cache: false
 library(Seurat)
 library(SingleR)
 library(celldex)
@@ -105,6 +106,20 @@ tutorial, so this tutorial stands alone.
 sce <- scRNAseq::KotliarovPBMCData()
 sce
 ```
+
+That is around 58,000 cells — more than we need to demonstrate anything here,
+and enough to exhaust a modest memory allocation. Subsample it.
+
+```{r}
+#| label: subsample
+set.seed(42)
+sce <- sce[, sample(ncol(sce), 5000)]
+dim(sce)
+```
+
+Subsampling for a tutorial is fine. Subsampling for an analysis is a decision
+you should make deliberately and report — rare populations are exactly the ones
+a random subsample is most likely to lose.
 
 SingleR expects log-normalized expression. The dataset arrives as a
 `SingleCellExperiment`, but since the rest of this course works in Seurat, we

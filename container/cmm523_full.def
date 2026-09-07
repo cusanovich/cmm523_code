@@ -1,0 +1,137 @@
+Bootstrap: localimage
+From: /xdisk/darrenc/cmm_523/containers/cmm523_base.sif
+
+# ============================================================================
+# CMM 523 -- FULL reference image (instructor)
+#
+# The base image plus everything students install across weeks 2, 3, 4, 6
+# and 7, in one build. Two purposes:
+#
+#   1. Rendering the tutorials. The base image has no Seurat, so tutorials
+#      cannot be rendered against it.
+#   2. Fallback. A student whose own build fails can use this and still do
+#      the analysis, so a broken install costs them a debugging session
+#      rather than the rest of the course.
+#
+# Keep this in sync with the student layer recipes in container/student/.
+# If a student layer gains a package, add it here too, or the tutorials will
+# render against an environment the students do not have.
+#
+# BUILD IT:
+#   sbatch build_layer.sbatch cmm523_full.def cmm523_full.sif
+#
+# REQUIRES github_pat.txt in the same directory (see %files).
+# ============================================================================
+
+%labels
+    Course CMM 523
+    Term   Fall 2026
+    Role   full reference environment
+
+%files
+    # /opt, not /tmp -- Apptainer remounts /tmp between %files and %post.
+    github_pat.txt /opt/github_pat.txt
+
+%post
+    set -e
+    mkdir -p /opt/build
+
+    # --- week 2 -------------------------------------------------------------
+    cat > /opt/build/w2.R << 'EOF'
+install.packages(c("Seurat", "SeuratObject"))
+EOF
+    Rscript /opt/build/w2.R
+
+    # --- week 3 -------------------------------------------------------------
+    cat > /opt/build/w3.R << 'EOF'
+install.packages("harmony")
+BiocManager::install(c("SingleR", "celldex", "scRNAseq", "scrapper"),
+                     ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/w3.R
+
+    # --- week 4 -------------------------------------------------------------
+    cat > /opt/build/w4.R << 'EOF'
+BiocManager::install(c("edgeR", "statmod"), ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/w4.R
+
+    # --- week 6 -------------------------------------------------------------
+    cat > /opt/build/w6.R << 'EOF'
+BiocManager::install(c("Signac", "EnsDb.Hsapiens.v86", "biovizBase"),
+                     ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/w6.R
+
+    # --- week 7 -------------------------------------------------------------
+    cat > /opt/build/w7.R << 'EOF'
+BiocManager::install(c("chromVAR", "motifmatchr", "TFBSTools", "JASPAR2024",
+                       "BSgenome.Hsapiens.UCSC.hg38"),
+                     ask = FALSE, update = FALSE)
+EOF
+    Rscript /opt/build/w7.R
+
+    # --- GitHub packages from weeks 3, 4 and 7 ------------------------------
+    cat > /opt/build/gh.R << 'EOF'
+Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
+options(repos = BiocManager::repositories())
+cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
+if (!nzchar(Sys.getenv("GITHUB_PAT"))) stop("No token found.")
+
+# seurat-wrappers is deliberately absent: the monocle3 tutorial uses the
+# seurat_to_cds() helper instead, which avoids a large dependency tree.
+for (repo in c("satijalab/seurat-data",
+               "immunogenomics/presto")) {
+  cat("\n========== installing", repo, "==========\n")
+  remotes::install_github(repo, upgrade = "never")
+}
+EOF
+    Rscript /opt/build/gh.R
+
+    # --- verify -------------------------------------------------------------
+    cat > /opt/build/verify.R << 'EOF'
+pkgs <- c("Seurat", "SeuratObject", "harmony", "SingleR", "celldex",
+          "scRNAseq", "scrapper", "edgeR", "statmod", "Signac",
+          "EnsDb.Hsapiens.v86", "biovizBase", "chromVAR", "motifmatchr",
+          "TFBSTools", "JASPAR2024", "BSgenome.Hsapiens.UCSC.hg38",
+          "SeuratData", "presto", "monocle3",
+          "knitr", "rmarkdown")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+
+# Installing and co-loading are not the same thing. Packages can install
+# cleanly and still collide on a shared dependency when loaded together,
+# which is exactly what a tutorial does.
+suppressPackageStartupMessages({
+  library(Seurat); library(Signac); library(monocle3)
+  library(chromVAR); library(edgeR)
+  library(SingleR); library(harmony); library(presto)
+})
+
+cat("\n=== full environment OK ===\n")
+cat(R.version.string, "\n")
+cat("Bioconductor", as.character(BiocManager::version()), "\n")
+cat("Packages:", nrow(installed.packages()), "\n")
+EOF
+    Rscript /opt/build/verify.R
+
+    rm -f /opt/github_pat.txt
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export HUB_ROOT=${HUB_ROOT:-/xdisk/darrenc/cmm_523/hub_cache}
+    export EXPERIMENT_HUB_CACHE=$HUB_ROOT/ExperimentHub
+    export ANNOTATION_HUB_CACHE=$HUB_ROOT/AnnotationHub
+    export BFC_CACHE=$HUB_ROOT/BiocFileCache
+    export XDG_CACHE_HOME=${XDG_CACHE_HOME:-/tmp/quarto-cache}
+
+%runscript
+    exec R "$@"
+
+%help
+    CMM 523 full reference environment: base image plus every package
+    students install across the semester.
+
+    Render a tutorial:
+        apptainer exec -B /xdisk cmm523_full.sif quarto render 01_seurat_intro.qmd

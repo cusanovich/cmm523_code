@@ -1,0 +1,358 @@
+---
+title: "Integration and label transfer"
+subtitle: "CMM 523 — Crash Course in Single-cell Genomics Analysis"
+format:
+  gfm:
+    toc: true
+    toc-depth: 2
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  cache: true
+knitr:
+  opts_chunk:
+    fig.path: "figs/03_integration-"
+    comment: "#>"
+---
+
+Almost no real study is a single sample. You have cells from several donors, or
+several timepoints, or several technologies, and you want to analyze them
+together. The problem is that if you simply concatenate them and cluster, the
+dominant structure is usually the batch rather than the biology — cells separate
+by which experiment they came from, not by what kind of cell they are.
+
+Integration is the family of methods that addresses this. This tutorial covers
+the Seurat approach and one of its most useful applications: transferring
+annotations from a labeled reference onto unlabeled query cells.
+
+## Before you start
+
+This tutorial needs about **24 GB of memory** and runs in **30–40 minutes**.
+
+```bash
+interactive -a cusanovichlab -n 8 -t 03:00:00 --mem=32G
+```
+
+Integration holds several copies of the data in memory at once, so it is more
+demanding than the single-sample workflow.
+
+## Setup
+
+```{r}
+#| label: setup
+#| cache: false
+library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+
+# CHANGE THIS to your NetID.
+NETID <- "your_netid"
+
+if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "integration")
+dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+
+# SeuratData datasets live in a shared read-only library on /xdisk. They are
+# data, not code, so they sit outside the container -- baking a 200 MB dataset
+# into every image would be wasteful, and the container is meant to define your
+# software environment, not carry your data. If a dataset is missing from the
+# shared library, the fallback below installs it into your own space.
+SHARED_DATA <- "/xdisk/darrenc/cmm_523/references/Rdatalib"
+MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
+dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
+
+knitr::opts_chunk$set(
+  cache.path = file.path(
+    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
+    "03_integration/"
+  )
+)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+WORK
+```
+
+## The data
+
+`SeuratData` distributes curated datasets for exactly this purpose. `panc8` is
+human pancreatic islet cells from eight donors across four different
+single-cell technologies — a harder integration problem than most real studies,
+which makes it a good demonstration.
+
+```{r}
+#| label: install-data
+# panc8 should already be present in the shared library. The InstallData()
+# call is only a fallback -- it needs somewhere writable, which is why the
+# setup chunk above put your own directory on the library path first.
+if (!requireNamespace("panc8.SeuratData", quietly = TRUE)) {
+  message("panc8 not found in the shared library; downloading (117 MB)...")
+  InstallData("panc8")
+}
+data("panc8", package = "panc8.SeuratData")
+
+# panc8 was serialized under Seurat v3 and predates several slots that
+# Seurat 5 objects have. Loading it as-is fails with errors like
+# "no slot of name 'images'". UpdateSeuratObject() migrates it forward.
+# Any Seurat object you are handed from a paper, a collaborator, or an older
+# SeuratData package may need this -- objects do not migrate themselves.
+panc8 <- UpdateSeuratObject(panc8)
+
+panc8
+```
+
+```{r}
+#| label: inspect
+table(panc8$tech)
+table(panc8$celltype)[1:10]
+```
+
+Four technologies. `celltype` is the published annotation, which we will use
+both to check the integration and, later, as the labels to transfer.
+
+## Why integration is needed
+
+Before integrating, look at what happens if you don't. Seurat 5 keeps samples as
+separate **layers** within one object, so splitting is a metadata operation
+rather than a restructuring.
+
+```{r}
+#| label: split
+panc8[["RNA"]] <- split(panc8[["RNA"]], f = panc8$tech)
+panc8
+```
+
+```{r}
+#| label: unintegrated
+panc8 <- NormalizeData(panc8)
+panc8 <- FindVariableFeatures(panc8)
+panc8 <- ScaleData(panc8)
+panc8 <- RunPCA(panc8)
+
+panc8 <- FindNeighbors(panc8, dims = 1:30, reduction = "pca")
+panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "unintegrated_clusters")
+panc8 <- RunUMAP(panc8, dims = 1:30, reduction = "pca",
+                 reduction.name = "umap.unintegrated")
+```
+
+```{r}
+#| label: unintegrated-plot
+#| fig-width: 12
+DimPlot(panc8, reduction = "umap.unintegrated",
+        group.by = c("tech", "celltype"), label = FALSE) +
+  plot_layout(guides = "collect")
+```
+
+This is the problem, drawn. Cells of the same type sit in different places
+depending on which technology produced them. Any clustering here recovers
+technology, not biology.
+
+## Integration
+
+Seurat 5 handles this with a single function, `IntegrateLayers()`. You pass a
+method; the function returns a new dimensional reduction in which shared cell
+types are co-embedded across batches.
+
+```{r}
+#| label: integrate-cca
+panc8 <- IntegrateLayers(
+  object = panc8,
+  method = CCAIntegration,
+  orig.reduction = "pca",
+  new.reduction = "integrated.cca",
+  verbose = FALSE
+)
+```
+
+Note what did *not* happen: no `FindIntegrationAnchors()`, no `IntegrateData()`,
+no separate "integrated" assay. If you find older tutorials using that pattern,
+they are written for Seurat v4. The result is comparable; the interface is
+simpler.
+
+Now cluster and embed using the integrated reduction rather than the raw PCA.
+
+```{r}
+#| label: cluster-integrated
+panc8 <- FindNeighbors(panc8, reduction = "integrated.cca", dims = 1:30)
+panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "cca_clusters")
+panc8 <- RunUMAP(panc8, reduction = "integrated.cca", dims = 1:30,
+                 reduction.name = "umap.cca")
+```
+
+```{r}
+#| label: integrated-plot
+#| fig-width: 12
+DimPlot(panc8, reduction = "umap.cca",
+        group.by = c("tech", "celltype"), label = FALSE) +
+  plot_layout(guides = "collect")
+```
+
+Compare against the unintegrated version above. Technologies now overlap; cell
+types separate. That is what success looks like.
+
+## Rejoining layers
+
+While the layers are split, expression-level operations act per-layer. Before
+running differential expression or anything else that treats the data as one
+dataset, rejoin them.
+
+```{r}
+#| label: rejoin
+panc8 <- JoinLayers(panc8)
+panc8
+```
+
+Forgetting this is a common source of confusing errors in Seurat 5 — functions
+either fail or silently operate on only one batch.
+
+## Judging integration
+
+Integration is a balance between two failure modes, and both are easy to reach.
+Under-correct and batch effects remain. Over-correct and you erase real
+biological differences — including, in the worst case, merging distinct cell
+types because they came from different samples.
+
+There is no single number that tells you which you have. The practical checks
+are: do batches mix, do known cell types stay separate, and do marker genes
+still behave as they should?
+
+```{r}
+#| label: check-mixing
+table(panc8$cca_clusters, panc8$tech)
+```
+
+Rows where one technology dominates are suspicious — either genuine biology
+specific to one experiment, or incomplete integration.
+
+```{r}
+#| label: check-markers
+#| fig-height: 8
+FeaturePlot(panc8, reduction = "umap.cca",
+            features = c("INS", "GCG", "SST", "PPY"))
+```
+
+Insulin, glucagon, somatostatin and pancreatic polypeptide mark beta, alpha,
+delta and gamma cells. Each should light up one region. If two of these overlap
+after integration, you have over-corrected.
+
+## Label transfer
+
+Now the practical payoff. You have a well-annotated reference and a new
+unlabeled dataset. Rather than annotating from scratch, project the reference
+labels onto the query.
+
+Split the pancreas data: three technologies as reference, one held out as query.
+
+```{r}
+#| label: split-ref-query
+pancreas.ref   <- subset(panc8, tech %in% c("celseq2", "smartseq2", "fluidigmc1"))
+pancreas.query <- subset(panc8, tech == "celseq")
+
+pancreas.ref   <- NormalizeData(pancreas.ref)
+pancreas.ref   <- FindVariableFeatures(pancreas.ref)
+pancreas.ref   <- ScaleData(pancreas.ref)
+pancreas.ref   <- RunPCA(pancreas.ref)
+pancreas.ref   <- RunUMAP(pancreas.ref, dims = 1:30, return.model = TRUE)
+
+pancreas.query <- NormalizeData(pancreas.query)
+```
+
+`return.model = TRUE` matters. Without it the UMAP cannot be reused to project
+new cells, and the mapping step below will fail.
+
+```{r}
+#| label: find-anchors
+anchors <- FindTransferAnchors(
+  reference = pancreas.ref,
+  query = pancreas.query,
+  dims = 1:30,
+  reference.reduction = "pca"
+)
+```
+
+Anchors are pairs of cells — one in the reference, one in the query — that
+appear to be the same cell type. They are the bridge across which labels travel.
+
+```{r}
+#| label: map-query
+pancreas.query <- MapQuery(
+  anchorset = anchors,
+  reference = pancreas.ref,
+  query = pancreas.query,
+  refdata = list(celltype = "celltype"),
+  reference.reduction = "pca",
+  reduction.model = "umap"
+)
+```
+
+```{r}
+#| label: mapping-plot
+#| fig-width: 12
+p1 <- DimPlot(pancreas.ref, reduction = "umap", group.by = "celltype",
+              label = TRUE, label.size = 3, repel = TRUE) +
+  NoLegend() + ggtitle("Reference")
+
+p2 <- DimPlot(pancreas.query, reduction = "ref.umap",
+              group.by = "predicted.celltype",
+              label = TRUE, label.size = 3, repel = TRUE) +
+  NoLegend() + ggtitle("Query, projected")
+
+p1 + p2
+```
+
+## How good are the predictions?
+
+Because these cells came with published annotations, we can grade the transfer
+directly — a luxury you will not have on real data.
+
+```{r}
+#| label: accuracy
+table(predicted = pancreas.query$predicted.celltype,
+      actual = pancreas.query$celltype)
+
+mean(pancreas.query$predicted.celltype == pancreas.query$celltype)
+```
+
+On real data the substitute is the prediction score, which reports how confident
+the transfer was for each cell.
+
+```{r}
+#| label: prediction-scores
+VlnPlot(pancreas.query, features = "predicted.celltype.score",
+        group.by = "predicted.celltype", pt.size = 0) +
+  NoLegend() +
+  labs(title = "Prediction confidence by assigned label")
+```
+
+Read this the way you read the SingleR delta plot. A label assigned with a low
+score is a label to distrust. Cell types poorly represented in the reference
+tend to show up here as broad, low distributions — which is the honest signal
+that the reference could not really speak to those cells.
+
+## Save your work
+
+```{r}
+#| label: save
+saveRDS(panc8, file = file.path(WORK, "output", "panc8_integrated.rds"))
+saveRDS(pancreas.query, file = file.path(WORK, "output", "pancreas_query_mapped.rds"))
+```
+
+## Session information
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+---
+
+*Adapted from the Seurat [introduction to
+integration](https://satijalab.org/seurat/articles/integration_introduction.html)
+and [mapping and
+annotation](https://satijalab.org/seurat/articles/integration_mapping.html)
+vignettes, updated to the Seurat 5 `IntegrateLayers` interface.*
