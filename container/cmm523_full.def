@@ -34,6 +34,12 @@ From: /xdisk/darrenc/cmm_523/containers/cmm523_base.sif
 
 %post
     set -e
+
+    # NOTE: never read the token into a shell variable in %post. Apptainer
+    # runs %post with shell tracing on, so every command is echoed into the
+    # build log -- the token included, in plaintext. The R script below reads
+    # the file directly; R does not echo its own source.
+
     mkdir -p /opt/build
 
     # --- week 2 -------------------------------------------------------------

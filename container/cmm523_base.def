@@ -91,7 +91,12 @@ From: bioconductor/bioconductor_docker:RELEASE_3_23
 %post
     set -e
 
-    export GITHUB_PAT=$(cat /opt/github_pat.txt)
+    # NOTE: do NOT read the token into a shell variable here. Apptainer runs
+    # %post with shell tracing enabled, so every command is echoed into the
+    # build log -- including the token itself, in plaintext. That log then
+    # gets committed, and GitHub's push protection rejects it (or worse,
+    # does not). The R scripts below read /opt/github_pat.txt directly;
+    # R does not echo its own source, so the token stays out of the log.
 
     # --- CHECK BEFORE BUILDING ----------------------------------------------
     # https://github.com/quarto-dev/quarto-cli/releases
