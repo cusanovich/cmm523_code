@@ -1,0 +1,338 @@
+---
+title: "Trajectory inference with monocle3"
+subtitle: "CMM 523 — Crash Course in Single-cell Genomics Analysis"
+format:
+  gfm:
+    toc: true
+    toc-depth: 2
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  cache: true
+knitr:
+  opts_chunk:
+    fig.path: "figs/06_trajectory-"
+    comment: "#>"
+---
+
+Clustering assumes cells fall into discrete groups. For many tissues that is a
+reasonable approximation — a B cell is a B cell. But differentiation is not
+discrete. A haematopoietic stem cell becoming an erythrocyte passes through a
+continuum of states, and forcing that continuum into clusters throws away the
+thing you probably care about: the order.
+
+Trajectory inference fits a path through the data and places each cell along
+it. The resulting coordinate is usually called **pseudotime** — not time in
+hours, but position along the inferred path.
+
+Two warnings before you start, because this is the technique in this course
+most likely to produce a confident wrong answer.
+
+A trajectory algorithm will fit a trajectory to anything. Give it discrete cell
+types with no developmental relationship and it will still draw a path through
+them, and that path will look perfectly plausible. The algorithm has no way to
+tell you that your data has no trajectory in it.
+
+And pseudotime is not time. Cells at the same pseudotime are at similar
+transcriptional states, which may or may not mean they are at the same point in
+a real process.
+
+## Before you start
+
+This tutorial needs about **32 GB of memory** and runs in **30–45 minutes**.
+
+```bash
+interactive -a cusanovichlab -n 8 -t 03:00:00
+```
+
+## Setup
+
+```{r}
+#| label: setup
+#| cache: false
+library(Seurat)
+library(SeuratData)
+library(monocle3)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# CHANGE THIS to your NetID.
+NETID <- "your_netid"
+
+if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "trajectory")
+dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+
+SHARED_DATA <- "/groups/darrenc/cmm_523/references/Rdatalib"
+MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
+dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
+
+knitr::opts_chunk$set(
+  cache.path = file.path(
+    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
+    "06_trajectory/"
+  )
+)
+
+options(future.globals.maxSize = 8000 * 1024^2)
+WORK
+```
+
+## The data
+
+Bone marrow, where haematopoiesis is actively happening — so there is a real
+continuum to find, not one we are imposing.
+
+```{r}
+#| label: data
+if (!requireNamespace("hcabm40k.SeuratData", quietly = TRUE)) {
+  InstallData("hcabm40k")
+}
+data("hcabm40k", package = "hcabm40k.SeuratData")
+bm <- UpdateSeuratObject(hcabm40k)
+
+bm
+```
+
+40,000 cells is more than we need and enough to make every step slow.
+Subsample.
+
+```{r}
+#| label: subsample
+set.seed(42)
+bm <- bm[, sample(ncol(bm), 10000)]
+dim(bm)
+```
+
+## Standard processing first
+
+Trajectory inference operates on an embedding, so we need one. This is the
+ordinary Seurat workflow.
+
+```{r}
+#| label: process
+bm <- NormalizeData(bm)
+bm <- FindVariableFeatures(bm, nfeatures = 2000)
+bm <- ScaleData(bm)
+bm <- RunPCA(bm, npcs = 50)
+bm <- FindNeighbors(bm, dims = 1:30)
+bm <- FindClusters(bm, resolution = 0.5)
+bm <- RunUMAP(bm, dims = 1:30)
+
+DimPlot(bm, label = TRUE) + NoLegend()
+```
+
+```{r}
+#| label: markers-check
+#| fig-height: 8
+FeaturePlot(bm, features = c("CD34", "GATA1", "HBB", "MPO", "CD79A", "CD3E"))
+```
+
+Orient yourself with these before going further. `CD34` marks progenitors —
+wherever it is highest is where the trajectory should start. `GATA1` and `HBB`
+mark the erythroid branch, `MPO` myeloid, `CD79A` B lymphoid, `CD3E` T. If you
+can see those arranged around a common origin, there is a trajectory to find.
+
+## Converting to a cell_data_set
+
+monocle3 uses its own object class. We convert with a small helper rather than
+`SeuratWrappers::as.cell_data_set()`, because SeuratWrappers pulls in a large
+tree of spatial-transcriptomics packages for that one function.
+
+```{r}
+#| label: convert
+source("seurat_to_cds.R")
+
+cds <- seurat_to_cds(bm, reductions = c(pca = "PCA", umap = "UMAP"))
+cds
+```
+
+Read `seurat_to_cds.R` if you have not. It is about thirty lines: pull the
+counts, build a table of cell metadata and a table of gene metadata, hand all
+three to `new_cell_data_set()`, and copy the reductions across. A
+`cell_data_set` is not a mysterious object, and knowing what a wrapper actually
+does is worth the ten minutes.
+
+## Clustering in monocle3
+
+monocle3 needs its own clustering, because it uses **partitions** — groups of
+cells it considers connected — to decide where one trajectory ends and another
+begins.
+
+```{r}
+#| label: cluster-cds
+cds <- cluster_cells(cds, reduction_method = "UMAP")
+
+plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE,
+           group_label_size = 4)
+```
+
+Partitions matter more than they look. Cells in different partitions get
+separate trajectories with separate roots. If monocle3 splits something you
+believe is one continuous process, the trajectory will be wrong in a way that
+is hard to see afterwards.
+
+## Learning the graph
+
+```{r}
+#| label: learn-graph
+cds <- learn_graph(cds, use_partition = TRUE)
+
+plot_cells(cds,
+           color_cells_by = "seurat_clusters",
+           label_groups_by_cluster = FALSE,
+           label_leaves = FALSE,
+           label_branch_points = TRUE,
+           graph_label_size = 3)
+```
+
+The black line is the principal graph — the skeleton monocle3 fits through the
+data. Branch points are where it thinks a decision happens.
+
+## Choosing a root
+
+Here is the step where biology has to enter, and where the method cannot help
+you. Pseudotime is a distance from a starting point, and **you choose the
+starting point.** Choose a different root and every cell's pseudotime changes.
+
+We pick the cell with the highest `CD34` expression, because progenitors are
+where haematopoiesis starts.
+
+```{r}
+#| label: root
+cd34 <- LayerData(bm, assay = "RNA", layer = "data")["CD34", ]
+root_cell <- names(which.max(cd34))
+
+cat("root cell:", root_cell, "\n")
+cat("CD34 (normalized):", round(max(cd34), 2), "\n")
+
+cds <- order_cells(cds, root_cells = root_cell)
+```
+
+In an interactive session `order_cells(cds)` opens a picker and you click the
+root yourself. That does not work in a rendered document, and it does not work
+in a batch job — hence choosing programmatically here. It is also more
+defensible: "the cell with the highest CD34" is a statement someone can
+disagree with, while "the one I clicked" is not.
+
+```{r}
+#| label: pseudotime-plot
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups = FALSE,
+           label_leaves = FALSE,
+           label_branch_points = FALSE,
+           graph_label_size = 3)
+```
+
+## Checking it against known biology
+
+A trajectory is a hypothesis. Test it against genes whose behaviour you already
+know.
+
+```{r}
+#| label: pseudotime-genes
+#| fig-height: 8
+bm$pseudotime <- pseudotime(cds)[colnames(bm)]
+
+FeaturePlot(bm, features = "pseudotime") +
+  scale_colour_viridis_c() +
+  ggtitle("Pseudotime")
+```
+
+```{r}
+#| label: gene-trends
+#| fig-height: 5
+genes <- c("CD34", "GATA1", "HBB")
+df <- data.frame(
+  pseudotime = bm$pseudotime,
+  t(as.matrix(LayerData(bm, assay = "RNA", layer = "data")[genes, ]))
+)
+df <- df[is.finite(df$pseudotime), ]
+
+df |>
+  tidyr::pivot_longer(-pseudotime, names_to = "gene", values_to = "expr") |>
+  ggplot(aes(pseudotime, expr)) +
+  geom_smooth(method = "loess", formula = y ~ x) +
+  facet_wrap(~ gene, scales = "free_y") +
+  theme_bw() +
+  labs(title = "Expression along pseudotime")
+```
+
+`CD34` should fall as pseudotime increases; `GATA1` should rise and then fall;
+`HBB` should rise late and steeply. If instead `CD34` rises, your root is at the
+wrong end — flip it and re-run. That is a normal thing to have happen, and
+catching it is exactly why you check against known markers rather than trusting
+the plot.
+
+## Genes that change along the trajectory
+
+```{r}
+#| label: graph-test
+graph_res <- graph_test(cds, neighbor_graph = "principal_graph", cores = 4)
+
+graph_res |>
+  filter(q_value < 0.01) |>
+  arrange(desc(morans_I)) |>
+  select(gene_short_name, morans_I, q_value) |>
+  head(20)
+```
+
+Moran's I measures spatial autocorrelation on the graph: genes whose expression
+varies smoothly along the trajectory rather than randomly. High values are
+genes that track the process.
+
+```{r}
+#| label: top-trajectory-genes
+#| fig-height: 8
+top <- graph_res |>
+  filter(q_value < 0.01) |>
+  arrange(desc(morans_I)) |>
+  head(4) |>
+  pull(gene_short_name)
+
+plot_cells(cds, genes = top, show_trajectory_graph = FALSE,
+           label_cell_groups = FALSE, label_leaves = FALSE)
+```
+
+## What this cannot tell you
+
+Worth stating plainly, because trajectory plots are persuasive out of
+proportion to their evidence.
+
+The trajectory is a fit to your embedding, and the embedding depends on your
+choice of variable features, number of PCs, and UMAP parameters. Change those
+and the trajectory can change. Pseudotime ordering is only as good as the root,
+which you chose. And a branch in the graph is not proof of a fate decision —
+it can equally reflect two cell types that happen to sit near each other.
+
+None of that makes the method useless. It makes it a hypothesis generator. The
+right follow-up to a trajectory is an experiment, not a p-value.
+
+## Save your work
+
+```{r}
+#| label: save
+saveRDS(cds, file = file.path(WORK, "output", "trajectory_cds.rds"))
+saveRDS(bm,  file = file.path(WORK, "output", "trajectory_seurat.rds"))
+write.csv(graph_res, file = file.path(WORK, "output", "graph_test_results.csv"))
+```
+
+## Session information
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+---
+
+*Adapted from the [monocle3
+documentation](https://cole-trapnell-lab.github.io/monocle3/docs/trajectories/)
+and the Seurat-wrappers monocle3 vignette, updated for Seurat 5 and rewritten
+to avoid the SeuratWrappers dependency.*

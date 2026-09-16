@@ -28,7 +28,7 @@ if [ -z "${DEF_NAME}" ] || [ -z "${SIF_NAME}" ]; then
 fi
 
 DEF=${SLURM_SUBMIT_DIR}/${DEF_NAME}
-SIF=/xdisk/darrenc/cmm_523/containers/${SIF_NAME}
+SIF=/groups/darrenc/cmm_523/containers/${SIF_NAME}
 
 export APPTAINER_CACHEDIR=/xdisk/darrenc/cmm_523/.apptainer_cache
 export APPTAINER_TMPDIR=/xdisk/darrenc/cmm_523/.apptainer_tmp
@@ -67,7 +67,7 @@ echo "Finished: $(date)"
 ls -lh "${SIF}"
 echo "=========================================="
 
-apptainer exec -B /xdisk "${SIF}" Rscript -e '
+apptainer exec -B /xdisk -B /groups "${SIF}" Rscript -e '
   cat(R.version.string, "\n")
   cat("Packages installed:", nrow(installed.packages()), "\n")
 '

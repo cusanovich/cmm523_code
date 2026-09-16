@@ -21,6 +21,13 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week2.sif
 # BUILD IT:
 #   interactive -a cusanovichlab -n 8 -t 02:00:00
 #   apptainer build /xdisk/darrenc/cmm_523/<your_netid>/week3.sif week3_annotation.def
+#
+# A NOTE ON INDENTATION: the EOF lines below sit at column 0 while the R
+# code above them is indented. That is not a mistake -- the shell requires
+# a heredoc terminator to be at the start of the line. The indented lines
+# are R code, and R ignores leading whitespace, so indenting those is fine.
+# Do not 'tidy' the EOF lines inward; the build will hang waiting for a
+# terminator it never finds.
 # ============================================================================
 
 %labels
@@ -45,45 +52,45 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week2.sif
 
     # --- CRAN and Bioconductor: no token needed -----------------------------
     cat > /opt/build/week3_cran.R << 'EOF'
-install.packages("harmony")
+    install.packages("harmony")
 EOF
     Rscript /opt/build/week3_cran.R
 
     cat > /opt/build/week3_bioc.R << 'EOF'
-# scrapper is easy to miss: SingleR delegates its marker-gene selection to it,
-# but does not declare it as a hard dependency. Without it, SingleR installs
-# fine and then fails at run time with "there is no package called 'scrapper'".
-BiocManager::install(c(
-  "SingleR", "celldex", "scRNAseq", "scrapper"
-), ask = FALSE, update = FALSE)
+    # scrapper is easy to miss: SingleR delegates its marker-gene selection to it,
+    # but does not declare it as a hard dependency. Without it, SingleR installs
+    # fine and then fails at run time with "there is no package called 'scrapper'".
+    BiocManager::install(c(
+      "SingleR", "celldex", "scRNAseq", "scrapper"
+    ), ask = FALSE, update = FALSE)
 EOF
     Rscript /opt/build/week3_bioc.R
 
     # --- GitHub: needs the token --------------------------------------------
     cat > /opt/build/week3_github.R << 'EOF'
-Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
+    Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
 
-# remotes resolves dependencies against getOption("repos"), which is CRAN-only
-# by default. BiocManager merges the Bioconductor repos in dynamically, so
-# without this line any GitHub package with Bioconductor imports cannot find
-# its dependencies.
-options(repos = BiocManager::repositories())
+    # remotes resolves dependencies against getOption("repos"), which is CRAN-only
+    # by default. BiocManager merges the Bioconductor repos in dynamically, so
+    # without this line any GitHub package with Bioconductor imports cannot find
+    # its dependencies.
+    options(repos = BiocManager::repositories())
 
-cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
-if (!nzchar(Sys.getenv("GITHUB_PAT"))) {
-  stop("No token found. Check that github_pat.txt is next to this recipe.")
-}
+    cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
+    if (!nzchar(Sys.getenv("GITHUB_PAT"))) {
+      stop("No token found. Check that github_pat.txt is next to this recipe.")
+    }
 
-remotes::install_github("satijalab/seurat-data", upgrade = "never")
+    remotes::install_github("satijalab/seurat-data", upgrade = "never")
 EOF
     Rscript /opt/build/week3_github.R
 
     # --- verify -------------------------------------------------------------
     cat > /opt/build/verify.R << 'EOF'
-pkgs <- c("harmony", "SingleR", "celldex", "scRNAseq", "scrapper", "SeuratData")
-missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
-cat("\n=== week 3 layer OK ===\n")
+    pkgs <- c("harmony", "SingleR", "celldex", "scRNAseq", "scrapper", "SeuratData")
+    missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+    if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+    cat("\n=== week 3 layer OK ===\n")
 EOF
     Rscript /opt/build/verify.R
 

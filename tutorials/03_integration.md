@@ -80,7 +80,7 @@ WORK
 ## The data
 
 `SeuratData` distributes curated datasets for exactly this purpose.
-`panc8` is human pancreatic islet cells from eight donors across four
+`panc8` is human pancreatic islet cells from eight donors across five
 different single-cell technologies — a harder integration problem than
 most real studies, which makes it a good demonstration.
 
@@ -129,8 +129,15 @@ table(panc8$celltype)[1:10]
     #>              gamma         macrophage 
     #>                625                 79
 
-Four technologies. `celltype` is the published annotation, which we will
-use both to check the integration and, later, as the labels to transfer.
+Five technologies, and notice how unbalanced they are: indrop
+contributes 8,569 cells while fluidigmc1 contributes 638, a
+thirteen-fold difference. That matters. Integration methods generally do
+better on the batches that dominate, so a small batch can end up less
+well corrected than a large one — and looking at a UMAP will not tell
+you that, because the small batch occupies less space regardless.
+
+`celltype` is the published annotation, which we will use both to check
+the integration and, later, as the labels to transfer.
 
 ## Why integration is needed
 
@@ -423,8 +430,16 @@ mean(pancreas.query$predicted.celltype == pancreas.query$celltype)
 
     #> [1] 0.9571713
 
-On real data the substitute is the prediction score, which reports how
-confident the transfer was for each cell.
+Around 96% correct. That is a good result, and worth reading with some
+care about why. The held-out technology, celseq, is closely related to
+celseq2, which is in the reference — so the query cells had a genuinely
+similar batch to match against. Transferring labels to a technology
+unlike anything in your reference is a harder problem and will not do
+this well.
+
+On real data you will not have the answers to grade against. The
+substitute is the prediction score, which reports how confident the
+transfer was for each cell.
 
 ``` r
 VlnPlot(pancreas.query, features = "predicted.celltype.score",

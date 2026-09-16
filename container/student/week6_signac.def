@@ -20,6 +20,13 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week4.sif
 #
 # EnsDb.Hsapiens.v86 is a large annotation package -- expect this build to take
 # longer than the earlier ones, mostly spent downloading.
+#
+# A NOTE ON INDENTATION: the EOF lines below sit at column 0 while the R
+# code above them is indented. That is not a mistake -- the shell requires
+# a heredoc terminator to be at the start of the line. The indented lines
+# are R code, and R ignores leading whitespace, so indenting those is fine.
+# Do not 'tidy' the EOF lines inward; the build will hang waiting for a
+# terminator it never finds.
 # ============================================================================
 
 %labels
@@ -32,20 +39,20 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week4.sif
     mkdir -p /opt/build
 
     cat > /opt/build/week6.R << 'EOF'
-# biovizBase is a Suggests of Signac, needed for the gene annotation track in
-# CoveragePlot(). Another install-fine-then-fail-later package.
-BiocManager::install(c(
-  "Signac", "EnsDb.Hsapiens.v86", "biovizBase"
-), ask = FALSE, update = FALSE)
+    # biovizBase is a Suggests of Signac, needed for the gene annotation track in
+    # CoveragePlot(). Another install-fine-then-fail-later package.
+    BiocManager::install(c(
+      "Signac", "EnsDb.Hsapiens.v86", "biovizBase"
+    ), ask = FALSE, update = FALSE)
 EOF
     Rscript /opt/build/week6.R
 
     cat > /opt/build/verify.R << 'EOF'
-pkgs <- c("Signac", "EnsDb.Hsapiens.v86", "biovizBase")
-missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
-cat("\n=== week 6 layer OK ===\n")
-cat("Signac", as.character(packageVersion("Signac")), "\n")
+    pkgs <- c("Signac", "EnsDb.Hsapiens.v86", "biovizBase")
+    missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+    if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+    cat("\n=== week 6 layer OK ===\n")
+    cat("Signac", as.character(packageVersion("Signac")), "\n")
 EOF
     Rscript /opt/build/verify.R
 

@@ -1,5 +1,5 @@
 Bootstrap: localimage
-From: /xdisk/darrenc/cmm_523/containers/cmm523_base.sif
+From: /groups/darrenc/cmm_523/containers/cmm523_base.sif
 
 # ============================================================================
 # CMM 523 -- Week 2 student layer: Seurat
@@ -20,8 +20,15 @@ From: /xdisk/darrenc/cmm_523/containers/cmm523_base.sif
 # Manager, so almost nothing is built from source.
 #
 # USE IT:
-#   apptainer exec -B /xdisk /xdisk/darrenc/cmm_523/<your_netid>/week2.sif R
+#   apptainer exec -B /xdisk -B /groups /xdisk/darrenc/cmm_523/<your_netid>/week2.sif R
 #
+#
+# A NOTE ON INDENTATION: the EOF lines below sit at column 0 while the R
+# code above them is indented. That is not a mistake -- the shell requires
+# a heredoc terminator to be at the start of the line. The indented lines
+# are R code, and R ignores leading whitespace, so indenting those is fine.
+# Do not 'tidy' the EOF lines inward; the build will hang waiting for a
+# terminator it never finds.
 # ============================================================================
 
 %labels
@@ -39,7 +46,7 @@ From: /xdisk/darrenc/cmm_523/containers/cmm523_base.sif
     # as a continuation inside single quotes, so R receives literal
     # backslashes and fails to parse.
     cat > /opt/build/week2.R << 'EOF'
-install.packages(c("Seurat", "SeuratObject"))
+    install.packages(c("Seurat", "SeuratObject"))
 EOF
     Rscript /opt/build/week2.R
 
@@ -48,15 +55,15 @@ EOF
     # like this, a failed install looks like a successful build, and you find
     # out when library() fails in the middle of your homework.
     cat > /opt/build/verify.R << 'EOF'
-pkgs <- c("Seurat", "SeuratObject")
-missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
-cat("\n=== week 2 layer OK ===\n")
-cat("Seurat", as.character(packageVersion("Seurat")), "\n")
+    pkgs <- c("Seurat", "SeuratObject")
+    missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+    if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
+    cat("\n=== week 2 layer OK ===\n")
+    cat("Seurat", as.character(packageVersion("Seurat")), "\n")
 EOF
     Rscript /opt/build/verify.R
 
 %help
     CMM 523 week 2: base image + Seurat.
 
-    apptainer exec -B /xdisk week2.sif R
+    apptainer exec -B /xdisk -B /groups week2.sif R

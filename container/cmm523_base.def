@@ -68,6 +68,13 @@ From: bioconductor/bioconductor_docker:RELEASE_3_23
 # Rscript. Do NOT convert back to inline `R -e '...'` with backslash line
 # continuations -- /bin/sh does not treat backslash-newline as a continuation
 # inside single quotes and R receives literal backslashes.
+#
+# A NOTE ON INDENTATION: the EOF lines below sit at column 0 while the R
+# code above them is indented. That is not a mistake -- the shell requires
+# a heredoc terminator to be at the start of the line. The indented lines
+# are R code, and R ignores leading whitespace, so indenting those is fine.
+# Do not 'tidy' the EOF lines inward; the build will hang waiting for a
+# terminator it never finds.
 # ============================================================================
 
 %labels
@@ -159,20 +166,20 @@ RPROFILE
 
     # --- rendering toolchain ------------------------------------------------
     cat > /opt/build/01_render.R << 'EOF'
-install.packages(c("knitr", "rmarkdown", "downlit", "xml2", "jsonlite"))
+    install.packages(c("knitr", "rmarkdown", "downlit", "xml2", "jsonlite"))
 EOF
     Rscript /opt/build/01_render.R
 
     # --- CRAN ---------------------------------------------------------------
     cat > /opt/build/02_cran.R << 'EOF'
-# Base only. Seurat and harmony are deliberately absent -- students install
-# those. tidyverse/patchwork/etc are here because every tutorial needs them
-# from week 2 onward and they are not the teaching target.
-install.packages(c(
-  "remotes", "BiocManager",
-  "tidyverse", "patchwork", "cowplot",
-  "viridis", "pheatmap", "RSQLite", "R.utils"
-))
+    # Base only. Seurat and harmony are deliberately absent -- students install
+    # those. tidyverse/patchwork/etc are here because every tutorial needs them
+    # from week 2 onward and they are not the teaching target.
+    install.packages(c(
+      "remotes", "BiocManager",
+      "tidyverse", "patchwork", "cowplot",
+      "viridis", "pheatmap", "RSQLite", "R.utils"
+    ))
 EOF
     Rscript /opt/build/02_cran.R
 
@@ -181,11 +188,11 @@ EOF
     # their installs will need. Pre-baking these keeps student layer builds to
     # a few minutes.
     cat > /opt/build/03_bioc_deps.R << 'EOF'
-BiocManager::install(c(
-  "GenomicRanges", "SummarizedExperiment", "SingleCellExperiment",
-  "BiocParallel", "DelayedArray", "HDF5Array", "Rsamtools",
-  "AnnotationHub", "glmGamPoi"
-), ask = FALSE, update = FALSE)
+    BiocManager::install(c(
+      "GenomicRanges", "SummarizedExperiment", "SingleCellExperiment",
+      "BiocParallel", "DelayedArray", "HDF5Array", "Rsamtools",
+      "AnnotationHub", "glmGamPoi"
+    ), ask = FALSE, update = FALSE)
 EOF
     Rscript /opt/build/03_bioc_deps.R
 
@@ -195,39 +202,39 @@ EOF
     # note that monocle3 pulls BPCells from GitHub HEAD regardless, which is a
     # loose thread worth revisiting.
     cat > /opt/build/06_github.R << 'EOF'
-# remotes resolves dependencies against getOption("repos"), which is CRAN-only
-# here -- BiocManager merges the Bioconductor repos dynamically rather than
-# storing them. Without this, a GitHub package with Bioconductor imports fails
-# to find its dependencies and is silently skipped.
-# Read the token directly rather than relying on the shell export. Both work;
-# doing both means a failure in either mechanism is not fatal.
-Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
+    # remotes resolves dependencies against getOption("repos"), which is CRAN-only
+    # here -- BiocManager merges the Bioconductor repos dynamically rather than
+    # storing them. Without this, a GitHub package with Bioconductor imports fails
+    # to find its dependencies and is silently skipped.
+    # Read the token directly rather than relying on the shell export. Both work;
+    # doing both means a failure in either mechanism is not fatal.
+    Sys.setenv(GITHUB_PAT = trimws(readLines("/opt/github_pat.txt")[1]))
 
-options(repos = BiocManager::repositories())
-cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
+    options(repos = BiocManager::repositories())
+    cat("GITHUB_PAT set:", nzchar(Sys.getenv("GITHUB_PAT")), "\n")
 
-remotes::install_github("cole-trapnell-lab/monocle3@v1.4.27", upgrade = "never")
-if (!requireNamespace("monocle3", quietly = TRUE)) stop("FAILED: monocle3")
+    remotes::install_github("cole-trapnell-lab/monocle3@v1.4.27", upgrade = "never")
+    if (!requireNamespace("monocle3", quietly = TRUE)) stop("FAILED: monocle3")
 
-# Seurat must NOT be here. If it is, something above pulled it in as a
-# dependency and week 2's install exercise is gone.
-if (requireNamespace("Seurat", quietly = TRUE)) {
-  stop("Seurat was installed as a side effect -- check what pulled it in")
-}
+    # Seurat must NOT be here. If it is, something above pulled it in as a
+    # dependency and week 2's install exercise is gone.
+    if (requireNamespace("Seurat", quietly = TRUE)) {
+      stop("Seurat was installed as a side effect -- check what pulled it in")
+    }
 EOF
     Rscript /opt/build/06_github.R
 
     # --- verify the base ----------------------------------------------------
     cat > /opt/build/07_verify_base.R << 'EOF'
-pkgs <- c("monocle3", "GenomicRanges", "SingleCellExperiment", "AnnotationHub",
-          "glmGamPoi", "R.utils", "knitr", "rmarkdown", "RSQLite",
-          "remotes", "BiocManager", "tidyverse")
-missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing)) stop("MISSING FROM BASE: ", paste(missing, collapse = ", "))
-cat("\n=== base layer complete ===\n")
-cat(R.version.string, "\n")
-cat("Bioconductor", as.character(BiocManager::version()), "\n")
-cat("Packages:", nrow(installed.packages()), "\n")
+    pkgs <- c("monocle3", "GenomicRanges", "SingleCellExperiment", "AnnotationHub",
+              "glmGamPoi", "R.utils", "knitr", "rmarkdown", "RSQLite",
+              "remotes", "BiocManager", "tidyverse")
+    missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+    if (length(missing)) stop("MISSING FROM BASE: ", paste(missing, collapse = ", "))
+    cat("\n=== base layer complete ===\n")
+    cat(R.version.string, "\n")
+    cat("Bioconductor", as.character(BiocManager::version()), "\n")
+    cat("Packages:", nrow(installed.packages()), "\n")
 EOF
     Rscript /opt/build/07_verify_base.R
 
@@ -237,7 +244,7 @@ EOF
 %environment
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
-    export HUB_ROOT=${HUB_ROOT:-/xdisk/darrenc/cmm_523/hub_cache}
+    export HUB_ROOT=${HUB_ROOT:-/groups/darrenc/cmm_523/references/hub_cache}
     export EXPERIMENT_HUB_CACHE=$HUB_ROOT/ExperimentHub
     export ANNOTATION_HUB_CACHE=$HUB_ROOT/AnnotationHub
     export BFC_CACHE=$HUB_ROOT/BiocFileCache
