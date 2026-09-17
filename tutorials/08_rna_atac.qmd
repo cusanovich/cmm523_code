@@ -1,0 +1,366 @@
+---
+title: "Joint RNA and ATAC analysis"
+subtitle: "CMM 523 — Crash Course in Single-cell Genomics Analysis"
+format:
+  gfm:
+    toc: true
+    toc-depth: 2
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  # Caching is OFF. knitr stores cached objects in a lazy-load database that
+  # cannot hold a variable over 2 GB, and a multiome object with ~100,000 peaks
+  # exceeds that. See the note in the Signac tutorial.
+  cache: false
+knitr:
+  opts_chunk:
+    fig.path: "figs/08_rna_atac-"
+    comment: "#>"
+---
+
+The [Signac tutorial](07_signac.md) analyzed chromatin accessibility on its own,
+and the [Seurat intro](01_seurat_intro.md) analyzed expression on its own. This
+one uses both, measured **in the same cells**.
+
+That last part is what makes multiome data different from having an RNA dataset
+and an ATAC dataset. With separate experiments you can integrate them — match
+cells that look similar across modalities and hope the matching is right. With
+multiome you do not have to: cell barcode `AAACAGCCAAGGAATC-1` has an expression
+profile and an accessibility profile, and they came from the same nucleus.
+
+That removes a whole category of uncertainty, and it lets you ask questions that
+are otherwise out of reach. Chief among them: **which regulatory elements control
+which genes?** Answering that requires knowing, cell by cell, whether a peak
+being open coincides with a gene being expressed. You cannot do that if your
+peaks and your genes came from different cells.
+
+## Before you start
+
+This tutorial needs about **48 GB of memory** and runs in **60–90 minutes**.
+
+```bash
+interactive -a cusanovichlab -n 12 -t 03:00:00
+```
+
+`interactive` allocates memory per core, so `-n 12` at the default 4 GB per core
+gives you 48 GB.
+
+## Setup
+
+```{r}
+#| label: setup
+#| cache: false
+library(Signac)
+library(Seurat)
+library(EnsDb.Hsapiens.v86)
+library(GenomeInfoDb)
+library(GenomicRanges)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+
+set.seed(1234)
+
+# CHANGE THIS to your NetID.
+NETID <- "your_netid"
+
+if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
+
+WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "rna_atac")
+dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
+
+SHARED <- "/groups/darrenc/cmm_523/references/pbmc_multiome"
+
+WORK
+```
+
+## Loading both modalities
+
+Same dataset as the Signac tutorial, but this time we keep the gene expression
+as well as the peaks.
+
+```{r}
+#| label: data
+h5_file   <- file.path(SHARED, "pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5")
+frag_file <- file.path(SHARED, "pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz")
+
+stopifnot(file.exists(h5_file), file.exists(frag_file))
+
+inputdata <- Read10X_h5(h5_file)
+names(inputdata)
+
+rna_counts  <- inputdata$`Gene Expression`
+atac_counts <- inputdata$Peaks
+
+dim(rna_counts)
+dim(atac_counts)
+```
+
+Two matrices, same columns. Confirm that rather than assume it — this is the
+property the entire tutorial depends on:
+
+```{r}
+#| label: check-barcodes
+identical(colnames(rna_counts), colnames(atac_counts))
+```
+
+## Building the object
+
+```{r}
+#| label: build
+pbmc <- CreateSeuratObject(counts = rna_counts, assay = "RNA")
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevels(annotation) <- paste0("chr", seqlevels(annotation))
+genome(annotation) <- "hg38"
+
+grange_counts <- StringToGRanges(rownames(atac_counts), sep = c(":", "-"))
+grange_use    <- seqnames(grange_counts) %in% standardChromosomes(grange_counts)
+atac_counts   <- atac_counts[as.vector(grange_use), ]
+
+pbmc[["ATAC"]] <- CreateChromatinAssay(
+  counts = atac_counts,
+  sep = c(":", "-"),
+  genome = "hg38",
+  fragments = frag_file,
+  min.cells = 10,
+  annotation = annotation
+)
+
+pbmc
+```
+
+One object, two assays. `DefaultAssay()` decides which one a function acts on,
+and forgetting to set it is the commonest mistake in multimodal work — the code
+runs, it just answers about the wrong modality.
+
+## Quality control on both modalities
+
+A cell has to pass QC in both assays to be usable. Failing either one makes it
+useless for joint analysis, however good the other looks.
+
+```{r}
+#| label: qc-metrics
+DefaultAssay(pbmc) <- "ATAC"
+pbmc <- NucleosomeSignal(pbmc)
+pbmc <- TSSEnrichment(pbmc, fast = FALSE)
+
+summary(pbmc@meta.data[, c("nCount_RNA", "nCount_ATAC", "percent.mt",
+                           "TSS.enrichment", "nucleosome_signal")])
+```
+
+```{r}
+#| label: qc-violin
+#| fig-width: 14
+#| fig-height: 5
+VlnPlot(
+  pbmc,
+  features = c("nCount_RNA", "nCount_ATAC", "percent.mt",
+               "TSS.enrichment", "nucleosome_signal"),
+  ncol = 5, log = TRUE, pt.size = 0
+) + NoLegend()
+```
+
+```{r}
+#| label: qc-filter
+before <- ncol(pbmc)
+
+keep <- pbmc$nCount_ATAC       < 1e5 &
+        pbmc$nCount_ATAC       > 1000 &
+        pbmc$nCount_RNA        < 25000 &
+        pbmc$nCount_RNA        > 1000 &
+        pbmc$percent.mt        < 20 &
+        pbmc$nucleosome_signal < 2 &
+        pbmc$TSS.enrichment    > 1
+
+data.frame(
+  criterion = c("ATAC < 1e5", "ATAC > 1000", "RNA < 25000", "RNA > 1000",
+                "percent.mt < 20", "nucleosome < 2", "TSS > 1"),
+  n_passing = c(
+    sum(pbmc$nCount_ATAC       < 1e5,   na.rm = TRUE),
+    sum(pbmc$nCount_ATAC       > 1000,  na.rm = TRUE),
+    sum(pbmc$nCount_RNA        < 25000, na.rm = TRUE),
+    sum(pbmc$nCount_RNA        > 1000,  na.rm = TRUE),
+    sum(pbmc$percent.mt        < 20,    na.rm = TRUE),
+    sum(pbmc$nucleosome_signal < 2,     na.rm = TRUE),
+    sum(pbmc$TSS.enrichment    > 1,     na.rm = TRUE)
+  ),
+  of_total = before
+)
+
+pbmc <- pbmc[, which(keep)]
+cat("kept", ncol(pbmc), "of", before, "cells\n")
+stopifnot(ncol(pbmc) > 500)
+```
+
+Note that requiring both modalities to pass costs you cells. That is the price
+of multiome data, and it is worth knowing before you design an experiment around
+it: you will recover fewer usable cells than you would from either assay run
+alone.
+
+## Processing each modality
+
+Each gets the treatment appropriate to its data type — SCTransform and PCA for
+RNA, TF-IDF and LSI for ATAC. Same object, different pipelines.
+
+```{r}
+#| label: process-rna
+DefaultAssay(pbmc) <- "RNA"
+pbmc <- SCTransform(pbmc, verbose = FALSE)
+pbmc <- RunPCA(pbmc)
+pbmc <- RunUMAP(pbmc, dims = 1:50, reduction.name = "umap.rna",
+                reduction.key = "rnaUMAP_")
+```
+
+```{r}
+#| label: process-atac
+DefaultAssay(pbmc) <- "ATAC"
+pbmc <- RunTFIDF(pbmc)
+pbmc <- FindTopFeatures(pbmc, min.cutoff = "q0")
+pbmc <- RunSVD(pbmc)
+
+n_lsi <- ncol(Embeddings(pbmc, "lsi"))
+use_dims <- 2:min(50, n_lsi)   # component 1 tracks sequencing depth
+
+pbmc <- RunUMAP(pbmc, reduction = "lsi", dims = use_dims,
+                reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+```{r}
+#| label: compare-modalities
+#| fig-width: 12
+p1 <- DimPlot(pbmc, reduction = "umap.rna") + ggtitle("RNA") + NoLegend()
+p2 <- DimPlot(pbmc, reduction = "umap.atac") + ggtitle("ATAC") + NoLegend()
+p1 + p2
+```
+
+Two views of the same cells. They agree on the broad structure and disagree on
+the details, which is the interesting part — the modalities are measuring
+related but distinct things, and where they disagree is often where the biology
+is.
+
+## Annotating cell types
+
+```{r}
+#| label: annotate
+DefaultAssay(pbmc) <- "SCT"
+pbmc <- FindNeighbors(pbmc, dims = 1:50)
+pbmc <- FindClusters(pbmc, resolution = 0.8, verbose = FALSE)
+
+DimPlot(pbmc, reduction = "umap.rna", label = TRUE) + NoLegend()
+```
+
+```{r}
+#| label: markers
+#| fig-height: 10
+FeaturePlot(
+  pbmc, reduction = "umap.rna",
+  features = c("MS4A1", "CD3D", "CD8A", "NKG7", "LYZ", "FCGR3A",
+               "CD14", "FCER1A", "PPBP"),
+  ncol = 3
+)
+```
+
+## Linking peaks to genes
+
+This is the analysis multiome data exists for. For each gene, `LinkPeaks()`
+looks at nearby peaks and asks whether accessibility correlates with expression
+across cells — while controlling for GC content, overall accessibility, and peak
+size, so that the result is not simply driven by which peaks are big or open in
+everything.
+
+```{r}
+#| label: link-peaks
+DefaultAssay(pbmc) <- "ATAC"
+
+pbmc <- RegionStats(pbmc, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+pbmc <- LinkPeaks(
+  object = pbmc,
+  peak.assay = "ATAC",
+  expression.assay = "SCT",
+  genes.use = c("MS4A1", "CD3D", "LYZ", "NKG7")
+)
+
+links <- Links(pbmc)
+length(links)
+head(as.data.frame(links), 10)
+```
+
+Restricting to four genes keeps this fast. Running genome-wide is the same call
+without `genes.use`, and it takes hours rather than minutes.
+
+```{r}
+#| label: coverage-links
+#| fig-height: 8
+CoveragePlot(
+  object = pbmc,
+  region = "MS4A1",
+  features = "MS4A1",
+  expression.assay = "SCT",
+  extend.upstream = 10000,
+  extend.downstream = 5000
+)
+```
+
+Read this plot carefully, because it is the payoff of the whole tutorial. The
+coverage tracks show accessibility per cell type. The panel on the right shows
+expression of the same gene in the same cells. The arcs at the bottom are the
+inferred peak-to-gene links. You are looking at a regulatory hypothesis: *this*
+element, open in *these* cells, appears to drive *this* gene.
+
+```{r}
+#| label: coverage-cd3d
+#| fig-height: 8
+CoveragePlot(
+  object = pbmc,
+  region = "CD3D",
+  features = "CD3D",
+  expression.assay = "SCT",
+  extend.upstream = 10000,
+  extend.downstream = 5000
+)
+```
+
+## What a link is and is not
+
+A link is a correlation across cells, computed with a null model that accounts
+for some obvious confounders. It is not evidence that the element regulates the
+gene.
+
+Two peaks near each other tend to be open in the same cells whether or not
+either controls the gene. A peak can correlate with expression because both
+respond to the same upstream signal. And the method only considers peaks within
+a fixed window, so genuine long-range interactions are invisible to it by
+construction.
+
+What links are good for is narrowing the field. Genome-wide you might have
+100,000 peaks and no idea which matter for your gene of interest. Linking gives
+you five candidates worth testing — and testing means a perturbation experiment,
+not a smaller p-value.
+
+## Save your work
+
+```{r}
+#| label: save
+saveRDS(pbmc, file = file.path(WORK, "output", "pbmc_multiome.rds"))
+```
+
+The [WNN tutorial](09_wnn.md) starts from this object.
+
+## Session information
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+---
+
+*Adapted from the [Signac multiomic
+vignette](https://stuartlab.org/signac/articles/pbmc_multiomic), updated for
+Signac 1.17 and Seurat 5.*
