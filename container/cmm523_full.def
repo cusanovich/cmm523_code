@@ -71,6 +71,7 @@ EOF
 
     # --- week 6 -------------------------------------------------------------
     cat > /opt/build/w6.R << 'EOF'
+    install.packages("hdf5r")   # Read10X_h5(); not a declared Seurat dependency
     BiocManager::install(c("Signac", "EnsDb.Hsapiens.v86", "biovizBase"),
                          ask = FALSE, update = FALSE)
 EOF
@@ -105,7 +106,7 @@ EOF
     cat > /opt/build/verify.R << 'EOF'
     pkgs <- c("Seurat", "SeuratObject", "harmony", "SingleR", "celldex",
               "scRNAseq", "scrapper", "edgeR", "statmod", "Signac",
-              "EnsDb.Hsapiens.v86", "biovizBase", "chromVAR", "motifmatchr",
+              "EnsDb.Hsapiens.v86", "biovizBase", "hdf5r", "chromVAR", "motifmatchr",
               "TFBSTools", "JASPAR2024", "BSgenome.Hsapiens.UCSC.hg38",
               "SeuratData", "presto", "monocle3",
               "knitr", "rmarkdown")

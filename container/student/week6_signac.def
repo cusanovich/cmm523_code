@@ -4,7 +4,7 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week4.sif
 # ============================================================================
 # CMM 523 -- Week 6 layer: single-cell ATAC
 #
-# Adds: Signac, EnsDb.Hsapiens.v86, biovizBase   (all Bioconductor / CRAN)
+# Adds: Signac, EnsDb.Hsapiens.v86, biovizBase, hdf5r  (Bioconductor / CRAN)
 #
 # No GitHub packages this week, so no token needed.
 #
@@ -32,7 +32,7 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week4.sif
 %labels
     Course CMM 523
     Week   6
-    Adds   Signac, EnsDb.Hsapiens.v86, biovizBase
+    Adds   Signac, EnsDb.Hsapiens.v86, biovizBase, hdf5r
 
 %post
     set -e
@@ -41,6 +41,12 @@ From: /xdisk/darrenc/cmm_523/<your_netid>/week4.sif
     cat > /opt/build/week6.R << 'EOF'
     # biovizBase is a Suggests of Signac, needed for the gene annotation track in
     # CoveragePlot(). Another install-fine-then-fail-later package.
+    # hdf5r is what Read10X_h5() uses to read 10x .h5 files. Seurat does not
+    # declare it as a hard dependency -- it checks at run time and tells you to
+    # install it. The system library it compiles against (libhdf5-dev) is
+    # already in the base image.
+    install.packages("hdf5r")
+
     BiocManager::install(c(
       "Signac", "EnsDb.Hsapiens.v86", "biovizBase"
     ), ask = FALSE, update = FALSE)
@@ -48,7 +54,7 @@ EOF
     Rscript /opt/build/week6.R
 
     cat > /opt/build/verify.R << 'EOF'
-    pkgs <- c("Signac", "EnsDb.Hsapiens.v86", "biovizBase")
+    pkgs <- c("Signac", "EnsDb.Hsapiens.v86", "biovizBase", "hdf5r")
     missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
     if (length(missing)) stop("MISSING: ", paste(missing, collapse = ", "))
     cat("\n=== week 6 layer OK ===\n")
