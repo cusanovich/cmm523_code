@@ -4,3 +4,7 @@
 .Rproj.user/
 github_pat.txt
 *.log
+container/*.log
+container/slurm-*.out
+tutorials/*.log
+tutorials/slurm-*.out
