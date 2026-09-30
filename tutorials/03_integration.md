@@ -25,17 +25,36 @@ covers the Seurat approach and one of its most useful applications:
 transferring annotations from a labeled reference onto unlabeled query
 cells.
 
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **24 GB of memory** and runs in **30–40
-minutes**.
+We rendered this tutorial with:
 
 ``` bash
-interactive -a cusanovichlab -n 8 -t 03:00:00 --mem=32G
+interactive -a cusanovichlab -n 8 -t 03:00:00
 ```
 
-Integration holds several copies of the data in memory at once, so it is
-more demanding than the single-sample workflow.
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **32 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for. Integration holds several copies of the
+data in memory at once, so it is more demanding than the single-sample
+workflow.
+
+It took about **8 minutes** to run when we did it. Ask for more time
+than you expect to need — a job that hits its limit is killed part way
+through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
@@ -49,7 +68,6 @@ library(dplyr)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "integration")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -64,18 +82,12 @@ MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
 dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
 
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "03_integration/"
-  )
-)
 
 options(future.globals.maxSize = 8000 * 1024^2)
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/integration"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/integration"
 
 ## The data
 
@@ -195,8 +207,8 @@ recovers technology, not biology.
 ## Integration
 
 Seurat 5 handles this with a single function, `IntegrateLayers()`. You
-pass a method; the function returns a new dimensional reduction in which
-shared cell types are co-embedded across batches.
+pass a method; the function returns a new dimensionality reduction in
+which shared cell types are co-embedded across batches.
 
 ``` r
 panc8 <- IntegrateLayers(
@@ -208,10 +220,10 @@ panc8 <- IntegrateLayers(
 )
 ```
 
-Note what did *not* happen: no `FindIntegrationAnchors()`, no
-`IntegrateData()`, no separate “integrated” assay. If you find older
-tutorials using that pattern, they are written for Seurat v4. The result
-is comparable; the interface is simpler.
+If you find older tutorials on integration, you might see commands like
+`FindIntegrationAnchors()` and `IntegrateData()`, or a separate
+“integrated” assay. These are written for Seurat v4. The result is
+comparable, but the Seurat v5 interface is simpler.
 
 Now cluster and embed using the integrated reduction rather than the raw
 PCA.
@@ -490,9 +502,9 @@ sessionInfo()
     #> [1] stats     graphics  grDevices utils     datasets  methods   base     
     #> 
     #> other attached packages:
-    #> [1] future_1.75.0         dplyr_1.2.1           ggplot2_4.0.3        
-    #> [4] patchwork_1.3.2       SeuratData_0.2.2.9002 Seurat_5.5.1         
-    #> [7] SeuratObject_5.4.0    sp_2.2-3             
+    #> [1] future_1.75.0          panc8.SeuratData_3.0.2 dplyr_1.2.1           
+    #> [4] ggplot2_4.0.3          patchwork_1.3.2        SeuratData_0.2.2.9002 
+    #> [7] Seurat_5.5.1           SeuratObject_5.4.0     sp_2.2-3              
     #> 
     #> loaded via a namespace (and not attached):
     #>   [1] deldir_2.0-4           pbapply_1.7-4          gridExtra_2.3.1       
@@ -521,18 +533,17 @@ sessionInfo()
     #>  [70] Rtsne_0.17             fastDummies_1.7.6      survival_3.8-9        
     #>  [73] polyclip_1.10-7        fitdistrplus_1.2-6     pillar_1.11.1         
     #>  [76] KernSmooth_2.23-26     plotly_4.12.1          generics_0.1.4        
-    #>  [79] RcppHNSW_0.7.0         panc8.SeuratData_3.0.2 scales_1.4.0          
-    #>  [82] globals_0.19.1         xtable_1.8-8           glue_1.8.1            
-    #>  [85] tools_4.6.1            data.table_1.18.4      RSpectra_0.16-2       
-    #>  [88] RANN_2.6.2             dotCall64_1.2          cowplot_1.2.0         
-    #>  [91] grid_4.6.1             tidyr_1.3.2            nlme_3.1-170          
-    #>  [94] beeswarm_0.4.0         vipor_0.4.7            cli_3.6.6             
-    #>  [97] rappdirs_0.3.4         spatstat.sparse_3.2-0  spam_2.11-4           
-    #> [100] viridisLite_0.4.3      uwot_0.2.4             gtable_0.3.6          
-    #> [103] digest_0.6.39          progressr_1.0.0        ggrepel_0.9.8         
-    #> [106] htmlwidgets_1.6.4      farver_2.1.2           htmltools_0.5.9       
-    #> [109] lifecycle_1.0.5        httr_1.4.8             mime_0.13             
-    #> [112] MASS_7.3-66
+    #>  [79] RcppHNSW_0.7.0         scales_1.4.0           globals_0.19.1        
+    #>  [82] xtable_1.8-8           glue_1.8.1             tools_4.6.1           
+    #>  [85] data.table_1.18.4      RSpectra_0.16-2        RANN_2.6.2            
+    #>  [88] dotCall64_1.2          cowplot_1.2.0          grid_4.6.1            
+    #>  [91] tidyr_1.3.2            nlme_3.1-170           beeswarm_0.4.0        
+    #>  [94] vipor_0.4.7            cli_3.6.6              rappdirs_0.3.4        
+    #>  [97] spatstat.sparse_3.2-0  spam_2.11-4            viridisLite_0.4.3     
+    #> [100] uwot_0.2.4             gtable_0.3.6           digest_0.6.39         
+    #> [103] progressr_1.0.0        ggrepel_0.9.8          htmlwidgets_1.6.4     
+    #> [106] farver_2.1.2           htmltools_0.5.9        lifecycle_1.0.5       
+    #> [109] httr_1.4.8             mime_0.13              MASS_7.3-66
 
 ------------------------------------------------------------------------
 

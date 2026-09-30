@@ -1,6 +1,7 @@
 # SingleR: automated cell type annotation
 
 
+- [Before you start](#before-you-start)
 - [Setup](#setup)
 - [Get a reference](#get-a-reference)
 - [Get some data to annotate](#get-some-data-to-annotate)
@@ -15,16 +16,46 @@
 - [Session information](#session-information)
 
 In the [Seurat intro](01_seurat_intro.md) you annotated clusters by
-hand: look up canonical markers, decide what each cluster is, type in
-the names. That works, but it is slow, it requires you to already know
-the markers, and it is hard to defend when someone asks why cluster 4 is
-a CD8 T cell and not something else.
+hand: you looked at the expression of canonical markers, decided what
+each cluster was, and typed in the names. That works, but it is slow, it
+requires you to already know the markers, and it is hard to defend when
+someone asks why cluster 4 is a CD8 T cell and not something else.
 
 SingleR takes a different approach. Given a reference dataset of known
 cell types, it correlates each of your cells against that reference and
 assigns the best match. It annotates **cells**, not clusters, which
 means you can also use it to check whether your clustering is carving
 the data at sensible joints.
+
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
+## Before you start
+
+We rendered this tutorial with:
+
+``` bash
+interactive -a cusanovichlab -n 8 -t 02:00:00
+```
+
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **32 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for. The default of 1 core and 4 GB is not
+enough: the dataset is large before we subsample it.
+
+It took about **2 minutes** to run when we did it. Ask for more time
+than you expect to need — a job that hits its limit is killed part way
+through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
@@ -40,23 +71,15 @@ library(ggplot2)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "singler")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
 
-# Rendering only: keep the multi-GB knitr cache off /home.
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "02_singler/"
-  )
-)
 
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/singler"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/singler"
 
 ## Get a reference
 
@@ -147,7 +170,8 @@ sce
     #> altExpNames(1): ADT
 
 That is around 58,000 cells — more than we need to demonstrate anything
-here, and enough to exhaust a modest memory allocation. Subsample it.
+here, and enough to exhaust a modest memory allocation. So let’s
+subsample it.
 
 ``` r
 set.seed(42)
@@ -423,7 +447,7 @@ sessionInfo()
     #>  [3] viridis_0.6.5               viridisLite_0.4.3          
     #>  [5] pheatmap_1.0.13             scRNAseq_2.26.0            
     #>  [7] SingleCellExperiment_1.34.0 celldex_1.22.0             
-    #>  [9] SingleR_2.14.1              SummarizedExperiment_1.42.0
+    #>  [9] SingleR_2.14.2              SummarizedExperiment_1.42.0
     #> [11] Biobase_2.72.0              GenomicRanges_1.64.0       
     #> [13] Seqinfo_1.2.0               IRanges_2.46.0             
     #> [15] S4Vectors_0.50.2            BiocGenerics_0.58.1        

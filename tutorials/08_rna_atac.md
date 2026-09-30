@@ -32,17 +32,36 @@ knowing, cell by cell, whether a peak being open coincides with a gene
 being expressed. You cannot do that if your peaks and your genes came
 from different cells.
 
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **48 GB of memory** and runs in **60–90
-minutes**.
+We rendered this tutorial with:
 
 ``` bash
 interactive -a cusanovichlab -n 12 -t 03:00:00
 ```
 
-`interactive` allocates memory per core, so `-n 12` at the default 4 GB
-per core gives you 48 GB.
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **48 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for. Holding RNA and ATAC together, and
+running SCTransform, makes this heavier than the single-modality
+tutorials.
+
+It took about **13 minutes** to run when we did it. Ask for more time
+than you expect to need — a job that hits its limit is killed part way
+through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
@@ -62,7 +81,6 @@ set.seed(1234)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "rna_atac")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -72,7 +90,7 @@ SHARED <- "/groups/darrenc/cmm_523/references/pbmc_multiome"
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/rna_atac"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/rna_atac"
 
 ## Loading both modalities
 
@@ -158,11 +176,10 @@ makes it useless for joint analysis, however good the other looks.
 
 ``` r
 DefaultAssay(pbmc) <- "ATAC"
-pbmc <- NucleosomeSignal(pbmc)
 pbmc <- TSSEnrichment(pbmc, fast = FALSE)
 
 summary(pbmc@meta.data[, c("nCount_RNA", "nCount_ATAC", "percent.mt",
-                           "TSS.enrichment", "nucleosome_signal")])
+                           "TSS.enrichment")])
 ```
 
     #>    nCount_RNA     nCount_ATAC       percent.mt     TSS.enrichment   
@@ -171,21 +188,13 @@ summary(pbmc@meta.data[, c("nCount_RNA", "nCount_ATAC", "percent.mt",
     #>  Median : 3776   Median : 19856   Median : 9.744   Median : 4.4693  
     #>  Mean   : 4402   Mean   : 20428   Mean   :10.267   Mean   : 4.4991  
     #>  3rd Qu.: 5243   3rd Qu.: 24251   3rd Qu.:12.250   3rd Qu.: 4.7712  
-    #>  Max.   :89927   Max.   :627380   Max.   :69.444   Max.   :20.1132  
-    #>  nucleosome_signal
-    #>  Min.   :0.2857   
-    #>  1st Qu.:0.8341   
-    #>  Median :0.9314   
-    #>  Mean   :0.9546   
-    #>  3rd Qu.:1.0273   
-    #>  Max.   :3.5080
+    #>  Max.   :89927   Max.   :627380   Max.   :69.444   Max.   :20.1132
 
 ``` r
 VlnPlot(
   pbmc,
-  features = c("nCount_RNA", "nCount_ATAC", "percent.mt",
-               "TSS.enrichment", "nucleosome_signal"),
-  ncol = 5, log = TRUE, pt.size = 0
+  features = c("nCount_RNA", "nCount_ATAC", "percent.mt", "TSS.enrichment"),
+  ncol = 4, log = TRUE, pt.size = 0
 ) + NoLegend()
 ```
 
@@ -194,24 +203,22 @@ VlnPlot(
 ``` r
 before <- ncol(pbmc)
 
-keep <- pbmc$nCount_ATAC       < 1e5 &
-        pbmc$nCount_ATAC       > 1000 &
-        pbmc$nCount_RNA        < 25000 &
-        pbmc$nCount_RNA        > 1000 &
-        pbmc$percent.mt        < 20 &
-        pbmc$nucleosome_signal < 2 &
-        pbmc$TSS.enrichment    > 1
+keep <- pbmc$nCount_ATAC    < 1e5 &
+        pbmc$nCount_ATAC    > 1000 &
+        pbmc$nCount_RNA     < 25000 &
+        pbmc$nCount_RNA     > 1000 &
+        pbmc$percent.mt     < 20 &
+        pbmc$TSS.enrichment > 1
 
 data.frame(
   criterion = c("ATAC < 1e5", "ATAC > 1000", "RNA < 25000", "RNA > 1000",
-                "percent.mt < 20", "nucleosome < 2", "TSS > 1"),
+                "percent.mt < 20", "TSS > 1"),
   n_passing = c(
     sum(pbmc$nCount_ATAC       < 1e5,   na.rm = TRUE),
     sum(pbmc$nCount_ATAC       > 1000,  na.rm = TRUE),
     sum(pbmc$nCount_RNA        < 25000, na.rm = TRUE),
     sum(pbmc$nCount_RNA        > 1000,  na.rm = TRUE),
     sum(pbmc$percent.mt        < 20,    na.rm = TRUE),
-    sum(pbmc$nucleosome_signal < 2,     na.rm = TRUE),
     sum(pbmc$TSS.enrichment    > 1,     na.rm = TRUE)
   ),
   of_total = before
@@ -224,15 +231,14 @@ data.frame(
     #> 3     RNA < 25000     11905    11909
     #> 4      RNA > 1000     11729    11909
     #> 5 percent.mt < 20     11658    11909
-    #> 6  nucleosome < 2     11820    11909
-    #> 7         TSS > 1     11908    11909
+    #> 6         TSS > 1     11908    11909
 
 ``` r
 pbmc <- pbmc[, which(keep)]
 cat("kept", ncol(pbmc), "of", before, "cells\n")
 ```
 
-    #> kept 11172 of 11909 cells
+    #> kept 11250 of 11909 cells
 
 ``` r
 stopifnot(ncol(pbmc) > 500)
@@ -329,34 +335,34 @@ links <- Links(pbmc)
 length(links)
 ```
 
-    #> [1] 29
+    #> [1] 27
 
 ``` r
 head(as.data.frame(links), 10)
 ```
 
     #>    seqnames    start      end  width strand     score  gene
-    #> 1     chr11 60357989 60455752  97764      * 0.1558907 MS4A1
-    #> 2     chr11 60396836 60455752  58917      * 0.1835564 MS4A1
-    #> 3     chr11 60455689 60455752     64      * 0.5220711 MS4A1
-    #> 4     chr11 60455752 60457782   2031      * 0.2699105 MS4A1
-    #> 5     chr11 60455752 60459606   3855      * 0.1240619 MS4A1
-    #> 6     chr11 60455752 60477293  21542      * 0.3517806 MS4A1
-    #> 7     chr11 60455752 60486118  30367      * 0.2387122 MS4A1
-    #> 8     chr11 60455752 60498802  43051      * 0.3811856 MS4A1
-    #> 9     chr11 60455752 60571126 115375      * 0.1435933 MS4A1
-    #> 10    chr11 60455752 60633879 178128      * 0.1856793 MS4A1
+    #> 1     chr11 60357989 60455752  97764      * 0.1560237 MS4A1
+    #> 2     chr11 60396836 60455752  58917      * 0.1821813 MS4A1
+    #> 3     chr11 60455689 60455752     64      * 0.5222503 MS4A1
+    #> 4     chr11 60455752 60457782   2031      * 0.2699702 MS4A1
+    #> 5     chr11 60455752 60459606   3855      * 0.1243761 MS4A1
+    #> 6     chr11 60455752 60477293  21542      * 0.3513204 MS4A1
+    #> 7     chr11 60455752 60486118  30367      * 0.2378480 MS4A1
+    #> 8     chr11 60455752 60498802  43051      * 0.3800661 MS4A1
+    #> 9     chr11 60455752 60571126 115375      * 0.1438476 MS4A1
+    #> 10    chr11 60455752 60633879 178128      * 0.1855842 MS4A1
     #>                       peak   zscore       pvalue
-    #> 1  chr11-60357719-60358258 2.145285 1.596503e-02
-    #> 2  chr11-60396248-60397424 2.143089 1.605296e-02
-    #> 3  chr11-60455290-60456088 8.260612 7.246344e-17
-    #> 4  chr11-60457557-60458006 4.154366 1.630951e-05
-    #> 5  chr11-60459521-60459691 2.193627 1.413113e-02
-    #> 6  chr11-60476867-60477719 4.033220 2.750885e-05
-    #> 7  chr11-60485853-60486383 3.186090 7.210478e-04
-    #> 8  chr11-60498212-60499391 5.199900 9.969786e-08
-    #> 9  chr11-60570897-60571354 2.088681 1.836820e-02
-    #> 10 chr11-60633727-60634031 2.669075 3.803018e-03
+    #> 1  chr11-60357719-60358258 2.238702 1.258766e-02
+    #> 2  chr11-60396248-60397424 1.985645 2.353636e-02
+    #> 3  chr11-60455290-60456088 8.090982 2.959291e-16
+    #> 4  chr11-60457557-60458006 3.629975 1.417243e-04
+    #> 5  chr11-60459521-60459691 2.367585 8.952307e-03
+    #> 6  chr11-60476867-60477719 4.070552 2.345090e-05
+    #> 7  chr11-60485853-60486383 3.255253 5.664563e-04
+    #> 8  chr11-60498212-60499391 4.565859 2.487267e-06
+    #> 9  chr11-60570897-60571354 2.038742 2.073788e-02
+    #> 10 chr11-60633727-60634031 2.694603 3.523624e-03
 
 Restricting to four genes keeps this fast. Running genome-wide is the
 same call without `genes.use`, and it takes hours rather than minutes.
@@ -374,12 +380,12 @@ CoveragePlot(
 
 ![](figs/08_rna_atac-coverage-links-1.png)
 
-Read this plot carefully, because it is the payoff of the whole
-tutorial. The coverage tracks show accessibility per cell type. The
-panel on the right shows expression of the same gene in the same cells.
-The arcs at the bottom are the inferred peak-to-gene links. You are
-looking at a regulatory hypothesis: *this* element, open in *these*
-cells, appears to drive *this* gene.
+Spend a moment looking at this plot carefully. There is a lot going on,
+but it is the main insight of multiome data. The coverage tracks show
+accessibility per cell type. The panel on the right shows expression of
+the same gene in the same cells. The arcs at the bottom are the inferred
+peak-to-gene links. You are looking at a regulatory hypothesis: *this*
+element, open in *these* cells, appears to drive *this* gene.
 
 ``` r
 CoveragePlot(

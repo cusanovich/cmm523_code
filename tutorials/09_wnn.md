@@ -12,8 +12,8 @@
   activity](#tf-expression-versus-motif-activity)
 - [Finding cell-type-specific
   factors](#finding-cell-type-specific-factors)
-- [What motif activity cannot tell
-  you](#what-motif-activity-cannot-tell-you)
+- [Careful interpretation of motif
+  data](#careful-interpretation-of-motif-data)
 - [Save your work](#save-your-work)
 - [Session information](#session-information)
 
@@ -39,18 +39,32 @@ infers which **transcription factors** are active in each cell, by
 asking which binding motifs are enriched in the regions that cell has
 open.
 
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
 ## Before you start
 
-This tutorial is the most demanding in the course. It needs about **64
-GB of memory** and runs in **3–5 hours**, most of that in the chromVAR
-step.
+This is the most demanding tutorial in the course. We rendered it as a
+batch job with 16 cores:
 
 ``` bash
-interactive -a cusanovichlab -n 16 -t 08:00:00
+#SBATCH --ntasks=16
+#SBATCH --time=04:00:00
 ```
 
-Do not run this interactively and wait. Write a batch script and come
-back.
+That is **64 GB** of memory, since memory comes with the cores at 4 GB
+each. When we rendered it, the whole tutorial took about 75 minutes,
+most of it in the chromVAR step.
+
+Do not run this interactively and wait. Write a batch script, submit it,
+and come back. If the job dies partway with a confusing error from deep
+inside a package, check whether it ran out of memory before anything
+else — the scheduler log will say so.
 
 ## Setup
 
@@ -78,7 +92,6 @@ set.seed(1234)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "wnn")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -100,7 +113,7 @@ BiocParallel::register(BiocParallel::SerialParam())
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/wnn"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/wnn"
 
 ## Starting from the previous tutorial
 
@@ -111,7 +124,7 @@ pbmc
 ```
 
     #> An object of class Seurat 
-    #> 167092 features across 11172 samples within 3 assays 
+    #> 167121 features across 11250 samples within 3 assays 
     #> Active assay: ATAC (106056 features, 106056 variable features)
     #>  2 layers present: counts, data
     #>  2 other assays present: RNA, SCT
@@ -158,50 +171,37 @@ p1 + p2 + p3
 The weights are the interesting output, and they are easy to overlook.
 
 `FindMultiModalNeighbors()` writes one weight column per modality into
-the metadata, named after the **assay** behind each reduction — not
-after the reduction. Our PCA was computed on the `SCT` assay, so the
-column is `SCT.weight` rather than `RNA.weight`. Find it rather than
-assuming:
+the metadata, named after the **assay** behind each reduction rather
+than after the reduction itself. Our PCA was computed on the `SCT`
+assay, so the RNA weight is in a column called `SCT.weight`, not
+`RNA.weight`.
 
 ``` r
-weight_cols <- grep("\\.weight$", colnames(pbmc@meta.data), value = TRUE)
-weight_cols
-```
-
-    #> [1] "SCT.weight"  "ATAC.weight"
-
-``` r
-rna_weight <- weight_cols[1]
-summary(pbmc@meta.data[[rna_weight]])
-```
-
-    #>    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
-    #> 0.08336 0.47942 0.52089 0.53439 0.57330 1.00000
-
-``` r
-VlnPlot(pbmc, features = rna_weight, group.by = "seurat_clusters",
+VlnPlot(pbmc, features = "SCT.weight", group.by = "seurat_clusters",
         sort = TRUE, pt.size = 0.1) +
   NoLegend() +
-  labs(title = paste(rna_weight, "by cluster"),
+  labs(title = "RNA weight by cluster",
        subtitle = "1 = decided entirely by expression, 0 = entirely by chromatin")
 ```
 
 ![](figs/09_wnn-weights-1.png)
 
 ``` r
-FeaturePlot(pbmc, reduction = "wnn.umap", features = rna_weight) +
+FeaturePlot(pbmc, reduction = "wnn.umap", features = "SCT.weight") +
   scale_colour_viridis_c() +
-  ggtitle(paste("Per-cell", rna_weight))
+  ggtitle("Per-cell RNA weight")
 ```
 
 ![](figs/09_wnn-weight-umap-1.png)
 
-Cells on the right of that violin plot were defined mostly by
-expression; those on the left by chromatin. This is a real result about
-your data rather than a diagnostic. If a population sits near 0.5, both
-modalities contributed — and if one sits at an extreme, that tells you
-something about which measurement carries the information for that cell
-type.
+Cells on the top of that violin plot were defined mostly by expression;
+those on the bottom by chromatin. This is a real result about your data
+rather than a diagnostic. If a population sits near 0.5, both modalities
+contributed — and if one sits at an extreme, that tells you something
+about which measurement carries the information for that cell type.
+Notice that the main distribution for all clusters centers just above
+0.5. That means RNA tends to be more informative for clustering across
+the board, but only slightly.
 
 ## Motif analysis
 
@@ -300,7 +300,7 @@ pbmc
 ```
 
     #> An object of class Seurat 
-    #> 167812 features across 11172 samples within 4 assays 
+    #> 167841 features across 11250 samples within 4 assays 
     #> Active assay: chromvar (720 features, 0 variable features)
     #>  1 layer present: data
     #>  3 other assays present: RNA, ATAC, SCT
@@ -389,58 +389,57 @@ for (ct in head(levels(pbmc$seurat_clusters), 6)) {
     #> 
     #> --- cluster 0 ---
     #>    gene   RNA.auc motif.auc   avg_auc
-    #> 1   FOS 0.9066331 0.9369494 0.9217913
-    #> 2 BACH1 0.8576660 0.9325554 0.8951107
-    #> 3  ETV6 0.8602019 0.8773863 0.8687941
-    #> 4   JUN 0.7656221 0.9288418 0.8472320
+    #> 1   FOS 0.9052132 0.9329548 0.9190840
+    #> 2 BACH1 0.8553397 0.9287060 0.8920228
+    #> 3  ETV6 0.8573875 0.8689253 0.8631564
+    #> 4   JUN 0.7655974 0.9237158 0.8446566
     #> 
     #> --- cluster 1 ---
     #>    gene   RNA.auc motif.auc   avg_auc
-    #> 1  TCF7 0.7614602 0.6631919 0.7123261
-    #> 2 FOXP1 0.7439536 0.5994160 0.6716848
-    #> 3  ZEB1 0.6029424 0.6618768 0.6324096
-    #> 4 KLF12 0.5802499 0.5312664 0.5557581
+    #> 1  TCF7 0.7636570 0.6570754 0.7103662
+    #> 2 FOXP1 0.7382025 0.5859303 0.6620664
+    #> 3  ZEB1 0.6035103 0.6509490 0.6272297
+    #> 4 KLF12 0.5807222 0.5222588 0.5514905
     #> 
     #> --- cluster 2 ---
     #>    gene   RNA.auc motif.auc   avg_auc
-    #> 1  TCF7 0.7268420 0.7146675 0.7207547
-    #> 2 FOXP1 0.7362672 0.5934838 0.6648755
-    #> 3  ZEB1 0.6159154 0.6989304 0.6574229
-    #> 4 RUNX2 0.6037125 0.6256294 0.6146710
+    #> 1  TCF7 0.7302801 0.7082590 0.7192696
+    #> 2 FOXP1 0.7368969 0.5827437 0.6598203
+    #> 3  ZEB1 0.6169112 0.6963421 0.6566267
+    #> 4 RUNX2 0.6041656 0.6169042 0.6105349
     #> 
     #> --- cluster 3 ---
     #>    gene   RNA.auc motif.auc   avg_auc
-    #> 1  TCF7 0.6827563 0.6998569 0.6913066
-    #> 2 KLF12 0.7162470 0.5711257 0.6436864
-    #> 3  CTCF 0.5318090 0.7424809 0.6371449
-    #> 4  ZEB1 0.6265308 0.6427955 0.6346631
+    #> 1 TBX21 0.6175629 0.8166142 0.7170885
+    #> 2 RUNX3 0.7179414 0.6720701 0.6950057
+    #> 3 EOMES 0.5899601 0.7170941 0.6535271
+    #> 4  ETS1 0.5563585 0.6784276 0.6173930
     #> 
     #> --- cluster 4 ---
     #>    gene   RNA.auc motif.auc   avg_auc
-    #> 1  TCF7 0.6253986 0.6547040 0.6400513
-    #> 2 KLF12 0.6868242 0.5654190 0.6261216
-    #> 3 RUNX2 0.5790814 0.6274301 0.6032557
-    #> 4  ZEB1 0.6246100 0.5597552 0.5921826
+    #> 1  TCF7 0.6273533 0.6613672 0.6443603
+    #> 2 KLF12 0.6894059 0.5737435 0.6315747
+    #> 3 RUNX2 0.5797808 0.6325703 0.6061755
+    #> 4  ZEB1 0.6238582 0.5758347 0.5998464
     #> 
     #> --- cluster 5 ---
-    #>     gene   RNA.auc motif.auc   avg_auc
-    #> 1  CEBPB 0.8676007 0.7962376 0.8319191
-    #> 2 POU2F2 0.8543410 0.7338494 0.7940952
-    #> 3  CEBPA 0.7182649 0.7993547 0.7588098
-    #> 4   RARA 0.6716280 0.8367362 0.7541821
+    #>    gene   RNA.auc motif.auc   avg_auc
+    #> 1  TCF7 0.6910854 0.6961118 0.6935986
+    #> 2 KLF12 0.7048265 0.5663780 0.6356022
+    #> 3  CTCF 0.5332740 0.7309229 0.6320984
+    #> 4  ZEB1 0.6233267 0.6271001 0.6252134
 
 A factor appearing here is expressed *and* has enriched motif
 accessibility in that cluster. That is much better evidence than either
 alone — though still correlative, and still a hypothesis rather than a
 result.
 
-## What motif activity cannot tell you
+## Careful interpretation of motif data
 
-Worth being explicit, because chromVAR output is easy to over-read.
-
-Motifs are short and degenerate. A given motif occurs in far more places
-in the genome than the factor actually binds, so motif presence is a
-weak proxy for occupancy.
+As you analyze motifs, keep in mind that motifs are short and
+degenerate. A given motif occurs in far more places in the genome than
+the factor actually binds, so motif presence is a weak proxy for
+occupancy.
 
 Related factors share motifs. Many JASPAR entries are near-identical
 across a family, and chromVAR cannot distinguish family members. A
@@ -450,10 +449,11 @@ And an enriched motif does not establish direction. A factor’s sites
 being open is consistent with it binding there, with it having bound
 previously, or with something else keeping that chromatin accessible.
 
-What this is good for is generating a short list of candidate regulators
-from an unbiased genome-wide measurement. The next step is a
-perturbation, a ChIP, or a footprinting analysis — not a stronger claim
-from the same data.
+Having said all that, this is a genuinely powerful approach, especially
+for developing specific, testable hypotheses. We get a short list of
+candidate regulators from an unbiased genome-wide measurement. The next
+step is a perturbation, a ChIP, or a footprinting analysis, but at least
+now we know which ones to test.
 
 ## Save your work
 

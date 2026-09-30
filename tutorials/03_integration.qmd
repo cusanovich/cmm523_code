@@ -14,6 +14,7 @@ execute:
 knitr:
   opts_chunk:
     fig.path: "figs/03_integration-"
+    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/03_integration/"
     comment: "#>"
 ---
 
@@ -27,16 +28,32 @@ Integration is the family of methods that addresses this. This tutorial covers
 the Seurat approach and one of its most useful applications: transferring
 annotations from a labeled reference onto unlabeled query cells.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **24 GB of memory** and runs in **30–40 minutes**.
+We rendered this tutorial with:
 
 ```bash
-interactive -a cusanovichlab -n 8 -t 03:00:00 --mem=32G
+interactive -a cusanovichlab -n 8 -t 03:00:00
 ```
 
-Integration holds several copies of the data in memory at once, so it is more
-demanding than the single-sample workflow.
+`interactive` allocates memory per core — 4 GB each by default — so that is **32
+GB** in total. Note there is no `--mem` flag: memory comes from the number of
+cores you ask for. Integration holds several copies of the data in memory at
+once, so it is more demanding than the single-sample workflow.
+
+It took about **8 minutes** to run when we did it. Ask for more time than you
+expect to need — a job that hits its limit is killed part way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no error
+message — the session simply stops mid-command. If that ever happens to you,
+here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -52,7 +69,6 @@ library(dplyr)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "integration")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -67,12 +83,6 @@ MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
 dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
 
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "03_integration/"
-  )
-)
 
 options(future.globals.maxSize = 8000 * 1024^2)
 WORK
@@ -162,7 +172,7 @@ technology, not biology.
 ## Integration
 
 Seurat 5 handles this with a single function, `IntegrateLayers()`. You pass a
-method; the function returns a new dimensional reduction in which shared cell
+method; the function returns a new dimensionality reduction in which shared cell
 types are co-embedded across batches.
 
 ```{r}
@@ -176,10 +186,10 @@ panc8 <- IntegrateLayers(
 )
 ```
 
-Note what did *not* happen: no `FindIntegrationAnchors()`, no `IntegrateData()`,
-no separate "integrated" assay. If you find older tutorials using that pattern,
-they are written for Seurat v4. The result is comparable; the interface is
-simpler.
+If you find older tutorials on integration, you might see commands like
+`FindIntegrationAnchors()` and `IntegrateData()`, or a separate "integrated"
+assay. These are written for Seurat v4. The result is comparable, but the
+Seurat v5 interface is simpler.
 
 Now cluster and embed using the integrated reduction rather than the raw PCA.
 

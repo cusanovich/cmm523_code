@@ -1,6 +1,7 @@
 # Seurat: the standard scRNA-seq workflow
 
 
+- [Before you start](#before-you-start)
 - [Setup](#setup)
 - [Get the data](#get-the-data)
 - [Build a Seurat object](#build-a-seurat-object)
@@ -8,7 +9,7 @@
 - [Normalization](#normalization)
 - [Variable features](#variable-features)
 - [Scaling](#scaling)
-- [Linear dimensional reduction](#linear-dimensional-reduction)
+- [Linear dimensionality reduction](#linear-dimensionality-reduction)
 - [Clustering](#clustering)
 - [Finding marker genes](#finding-marker-genes)
 - [Assigning cell type identities](#assigning-cell-type-identities)
@@ -22,6 +23,36 @@ to annotated cell types on a UMAP.
 
 Everything here runs inside the course container. If you have not built
 it yet, go back to the in-class assignment before starting.
+
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
+## Before you start
+
+We rendered this tutorial with:
+
+``` bash
+interactive -a cusanovichlab -n 4 -t 02:00:00
+```
+
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **16 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for. This is a small dataset, so that is
+plenty.
+
+It took about **2 minutes** to run when we did it. Ask for more time
+than you expect to need — a job that hits its limit is killed part way
+through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
@@ -38,23 +69,15 @@ library(ggplot2)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "seurat_intro")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
 
-# Rendering only: keep the multi-GB knitr cache off /home.
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "01_seurat_intro/"
-  )
-)
 
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/seurat_intro"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/seurat_intro"
 
 ## Get the data
 
@@ -217,7 +240,7 @@ all.genes <- rownames(pbmc)
 pbmc <- ScaleData(pbmc, features = all.genes)
 ```
 
-## Linear dimensional reduction
+## Linear dimensionality reduction
 
 ``` r
 pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
@@ -256,7 +279,8 @@ DimPlot(pbmc, reduction = "pca") + NoLegend()
 `DimHeatmap()` is a useful way to judge how many components carry real
 signal. Each panel shows the cells and genes with the most extreme
 loadings on that component, ordered. A component with clear block
-structure is capturing something; one that looks like noise probably is.
+structure is capturing something; one that looks like noise probably is
+not.
 
 ``` r
 DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
@@ -270,9 +294,10 @@ DimHeatmap(pbmc, dims = 1:15, cells = 500, balanced = TRUE)
 
 ![](figs/01_seurat_intro-dimheatmap-many-1.png)
 
-The elbow plot ranks components by the variance they explain. The
-“elbow” — the point where the curve flattens — is a rough guide to how
-many to keep.
+For downstream analysis, we only want to use the most informative PCs.
+But how do we decide how many to use? People often use an “elbow plot.”
+It ranks components by the variance they explain. The “elbow” — the
+point where the curve flattens — is a rough guide to how many to keep.
 
 ``` r
 ElbowPlot(pbmc)
@@ -477,37 +502,39 @@ sessionInfo()
     #>  [13] png_0.1-9              vctrs_0.7.3            reshape2_1.4.5        
     #>  [16] stringr_1.6.0          pkgconfig_2.0.3        fastmap_1.2.0         
     #>  [19] labeling_0.4.3         utf8_1.2.6             promises_1.5.0        
-    #>  [22] rmarkdown_2.31         ragg_1.5.2             purrr_1.2.2           
-    #>  [25] xfun_0.60              jsonlite_2.0.0         goftest_1.2-3         
-    #>  [28] later_1.4.8            spatstat.utils_3.2-4   irlba_2.3.7           
-    #>  [31] parallel_4.6.1         cluster_2.1.8.3        R6_2.6.1              
-    #>  [34] ica_1.0-3              stringi_1.8.9          RColorBrewer_1.1-3    
-    #>  [37] spatstat.data_3.1-9    limma_3.68.5           reticulate_1.46.0     
-    #>  [40] parallelly_1.48.0      spatstat.univar_3.2-0  lmtest_0.9-40         
-    #>  [43] scattermore_1.2        Rcpp_1.1.2             knitr_1.51            
-    #>  [46] tensor_1.5.1           future.apply_1.20.2    zoo_1.9-0             
-    #>  [49] R.utils_2.13.0         sctransform_0.4.3      httpuv_1.6.17         
-    #>  [52] Matrix_1.7-6           splines_4.6.1          igraph_2.3.3          
-    #>  [55] tidyselect_1.2.1       dichromat_2.0-1        abind_1.4-8           
-    #>  [58] yaml_2.3.12            spatstat.random_3.5-1  codetools_0.2-20      
-    #>  [61] miniUI_0.1.2           spatstat.explore_3.8-2 listenv_1.0.0         
-    #>  [64] lattice_0.22-9         tibble_3.3.1           plyr_1.8.9            
-    #>  [67] withr_3.0.3            shiny_1.14.0           S7_0.2.2              
-    #>  [70] ROCR_1.0-12            evaluate_1.0.5         Rtsne_0.17            
-    #>  [73] fastDummies_1.7.6      survival_3.8-9         polyclip_1.10-7       
-    #>  [76] fitdistrplus_1.2-6     pillar_1.11.1          KernSmooth_2.23-26    
-    #>  [79] plotly_4.12.1          generics_0.1.4         RcppHNSW_0.7.0        
-    #>  [82] scales_1.4.0           globals_0.19.1         xtable_1.8-8          
-    #>  [85] glue_1.8.1             tools_4.6.1            data.table_1.18.4     
-    #>  [88] RSpectra_0.16-2        RANN_2.6.2             dotCall64_1.2         
-    #>  [91] cowplot_1.2.0          grid_4.6.1             tidyr_1.3.2           
-    #>  [94] nlme_3.1-170           cli_3.6.6              spatstat.sparse_3.2-0 
-    #>  [97] textshaping_1.0.5      spam_2.11-4            viridisLite_0.4.3     
-    #> [100] uwot_0.2.4             gtable_0.3.6           R.methodsS3_1.8.2     
-    #> [103] digest_0.6.39          progressr_1.0.0        ggrepel_0.9.8         
-    #> [106] htmlwidgets_1.6.4      farver_2.1.2           R.oo_1.27.1           
-    #> [109] htmltools_0.5.9        lifecycle_1.0.5        httr_1.4.8            
-    #> [112] statmod_1.5.2          mime_0.13              MASS_7.3-66
+    #>  [22] rmarkdown_2.31         ggbeeswarm_0.7.3       ragg_1.5.2            
+    #>  [25] purrr_1.2.2            xfun_0.60              jsonlite_2.0.0        
+    #>  [28] goftest_1.2-3          later_1.4.8            spatstat.utils_3.2-4  
+    #>  [31] irlba_2.3.7            parallel_4.6.1         cluster_2.1.8.3       
+    #>  [34] R6_2.6.1               ica_1.0-3              stringi_1.8.9         
+    #>  [37] RColorBrewer_1.1-3     spatstat.data_3.1-9    limma_3.68.5          
+    #>  [40] reticulate_1.46.0      parallelly_1.48.0      spatstat.univar_3.2-0 
+    #>  [43] lmtest_0.9-40          scattermore_1.2        Rcpp_1.1.2            
+    #>  [46] knitr_1.51             tensor_1.5.1           future.apply_1.20.2   
+    #>  [49] zoo_1.9-0              R.utils_2.13.0         sctransform_0.4.3     
+    #>  [52] httpuv_1.6.17          Matrix_1.7-6           splines_4.6.1         
+    #>  [55] igraph_2.3.3           tidyselect_1.2.1       dichromat_2.0-1       
+    #>  [58] abind_1.4-8            yaml_2.3.12            spatstat.random_3.5-1 
+    #>  [61] codetools_0.2-20       miniUI_0.1.2           spatstat.explore_3.8-2
+    #>  [64] listenv_1.0.0          lattice_0.22-9         tibble_3.3.1          
+    #>  [67] plyr_1.8.9             withr_3.0.3            shiny_1.14.0          
+    #>  [70] S7_0.2.2               ROCR_1.0-12            ggrastr_1.0.2         
+    #>  [73] evaluate_1.0.5         Rtsne_0.17             fastDummies_1.7.6     
+    #>  [76] survival_3.8-9         polyclip_1.10-7        fitdistrplus_1.2-6    
+    #>  [79] pillar_1.11.1          KernSmooth_2.23-26     plotly_4.12.1         
+    #>  [82] generics_0.1.4         RcppHNSW_0.7.0         scales_1.4.0          
+    #>  [85] globals_0.19.1         xtable_1.8-8           glue_1.8.1            
+    #>  [88] tools_4.6.1            data.table_1.18.4      RSpectra_0.16-2       
+    #>  [91] RANN_2.6.2             dotCall64_1.2          cowplot_1.2.0         
+    #>  [94] grid_4.6.1             tidyr_1.3.2            nlme_3.1-170          
+    #>  [97] presto_1.1.0           beeswarm_0.4.0         vipor_0.4.7           
+    #> [100] cli_3.6.6              spatstat.sparse_3.2-0  textshaping_1.0.5     
+    #> [103] spam_2.11-4            viridisLite_0.4.3      uwot_0.2.4            
+    #> [106] gtable_0.3.6           R.methodsS3_1.8.2      digest_0.6.39         
+    #> [109] progressr_1.0.0        ggrepel_0.9.8          htmlwidgets_1.6.4     
+    #> [112] farver_2.1.2           R.oo_1.27.1            htmltools_0.5.9       
+    #> [115] lifecycle_1.0.5        httr_1.4.8             statmod_1.5.2         
+    #> [118] mime_0.13              MASS_7.3-66
 
 ------------------------------------------------------------------------
 

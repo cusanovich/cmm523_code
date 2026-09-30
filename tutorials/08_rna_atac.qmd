@@ -36,16 +36,32 @@ which genes?** Answering that requires knowing, cell by cell, whether a peak
 being open coincides with a gene being expressed. You cannot do that if your
 peaks and your genes came from different cells.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **48 GB of memory** and runs in **60–90 minutes**.
+We rendered this tutorial with:
 
 ```bash
 interactive -a cusanovichlab -n 12 -t 03:00:00
 ```
 
-`interactive` allocates memory per core, so `-n 12` at the default 4 GB per core
-gives you 48 GB.
+`interactive` allocates memory per core — 4 GB each by default — so that is **48
+GB** in total. Note there is no `--mem` flag: memory comes from the number of
+cores you ask for. Holding RNA and ATAC together, and running SCTransform, makes
+this heavier than the single-modality tutorials.
+
+It took about **13 minutes** to run when we did it. Ask for more time than you
+expect to need — a job that hits its limit is killed part way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no error
+message — the session simply stops mid-command. If that ever happens to you,
+here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -67,7 +83,6 @@ set.seed(1234)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "rna_atac")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -146,22 +161,20 @@ useless for joint analysis, however good the other looks.
 ```{r}
 #| label: qc-metrics
 DefaultAssay(pbmc) <- "ATAC"
-pbmc <- NucleosomeSignal(pbmc)
 pbmc <- TSSEnrichment(pbmc, fast = FALSE)
 
 summary(pbmc@meta.data[, c("nCount_RNA", "nCount_ATAC", "percent.mt",
-                           "TSS.enrichment", "nucleosome_signal")])
+                           "TSS.enrichment")])
 ```
 
 ```{r}
 #| label: qc-violin
-#| fig-width: 14
+#| fig-width: 12
 #| fig-height: 5
 VlnPlot(
   pbmc,
-  features = c("nCount_RNA", "nCount_ATAC", "percent.mt",
-               "TSS.enrichment", "nucleosome_signal"),
-  ncol = 5, log = TRUE, pt.size = 0
+  features = c("nCount_RNA", "nCount_ATAC", "percent.mt", "TSS.enrichment"),
+  ncol = 4, log = TRUE, pt.size = 0
 ) + NoLegend()
 ```
 
@@ -169,24 +182,22 @@ VlnPlot(
 #| label: qc-filter
 before <- ncol(pbmc)
 
-keep <- pbmc$nCount_ATAC       < 1e5 &
-        pbmc$nCount_ATAC       > 1000 &
-        pbmc$nCount_RNA        < 25000 &
-        pbmc$nCount_RNA        > 1000 &
-        pbmc$percent.mt        < 20 &
-        pbmc$nucleosome_signal < 2 &
-        pbmc$TSS.enrichment    > 1
+keep <- pbmc$nCount_ATAC    < 1e5 &
+        pbmc$nCount_ATAC    > 1000 &
+        pbmc$nCount_RNA     < 25000 &
+        pbmc$nCount_RNA     > 1000 &
+        pbmc$percent.mt     < 20 &
+        pbmc$TSS.enrichment > 1
 
 data.frame(
   criterion = c("ATAC < 1e5", "ATAC > 1000", "RNA < 25000", "RNA > 1000",
-                "percent.mt < 20", "nucleosome < 2", "TSS > 1"),
+                "percent.mt < 20", "TSS > 1"),
   n_passing = c(
     sum(pbmc$nCount_ATAC       < 1e5,   na.rm = TRUE),
     sum(pbmc$nCount_ATAC       > 1000,  na.rm = TRUE),
     sum(pbmc$nCount_RNA        < 25000, na.rm = TRUE),
     sum(pbmc$nCount_RNA        > 1000,  na.rm = TRUE),
     sum(pbmc$percent.mt        < 20,    na.rm = TRUE),
-    sum(pbmc$nucleosome_signal < 2,     na.rm = TRUE),
     sum(pbmc$TSS.enrichment    > 1,     na.rm = TRUE)
   ),
   of_total = before
@@ -307,7 +318,8 @@ CoveragePlot(
 )
 ```
 
-Read this plot carefully, because it is the payoff of the whole tutorial. The
+Spend a moment looking at this plot carefully. There is a lot going on, but it is
+the main insight of multiome data. The
 coverage tracks show accessibility per cell type. The panel on the right shows
 expression of the same gene in the same cells. The arcs at the bottom are the
 inferred peak-to-gene links. You are looking at a regulatory hypothesis: *this*

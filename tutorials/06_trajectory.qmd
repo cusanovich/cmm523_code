@@ -14,6 +14,7 @@ execute:
 knitr:
   opts_chunk:
     fig.path: "figs/06_trajectory-"
+    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/06_trajectory/"
     comment: "#>"
 ---
 
@@ -39,13 +40,31 @@ And pseudotime is not time. Cells at the same pseudotime are at similar
 transcriptional states, which may or may not mean they are at the same point in
 a real process.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **32 GB of memory** and runs in **30–45 minutes**.
+We rendered this tutorial with:
 
 ```bash
 interactive -a cusanovichlab -n 8 -t 03:00:00
 ```
+
+`interactive` allocates memory per core — 4 GB each by default — so that is **32
+GB** in total. Note there is no `--mem` flag: memory comes from the number of
+cores you ask for.
+
+It took about **6 minutes** to run when we did it. Ask for more time than you
+expect to need — a job that hits its limit is killed part way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no error
+message — the session simply stops mid-command. If that ever happens to you,
+here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -62,7 +81,6 @@ library(patchwork)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "trajectory")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -72,12 +90,6 @@ MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
 dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
 
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "06_trajectory/"
-  )
-)
 
 options(future.globals.maxSize = 8000 * 1024^2)
 WORK
@@ -85,8 +97,9 @@ WORK
 
 ## The data
 
-Bone marrow, where haematopoiesis is actively happening — so there is a real
-continuum to find, not one we are imposing.
+For this tutorial, we will use bone marrow data. Bone marrow is where
+haematopoiesis is actively happening — so there is a real continuum to find, not
+one we are imposing.
 
 ```{r}
 #| label: data
@@ -100,7 +113,7 @@ bm
 ```
 
 40,000 cells is more than we need and enough to make every step slow.
-Subsample.
+Let's subsample.
 
 ```{r}
 #| label: subsample
@@ -130,13 +143,34 @@ DimPlot(bm, label = TRUE) + NoLegend()
 ```{r}
 #| label: markers-check
 #| fig-height: 8
-FeaturePlot(bm, features = c("CD34", "GATA1", "HBB", "MPO", "CD79A", "CD3E"))
+FeaturePlot(bm, features = c("CD34", "GATA1", "HBB",
+                             "LYZ", "S100A8", "MPO",
+                             "CD79A", "CD3E", "NKG7"), ncol = 3)
 ```
 
-Orient yourself with these before going further. `CD34` marks progenitors —
-wherever it is highest is where the trajectory should start. `GATA1` and `HBB`
-mark the erythroid branch, `MPO` myeloid, `CD79A` B lymphoid, `CD3E` T. If you
-can see those arranged around a common origin, there is a trajectory to find.
+Orient yourself with these before going further.
+
+- `CD34` marks progenitors. Wherever it is highest is where the trajectory
+  should start.
+- `GATA1` and `HBB` mark the erythroid branch — `GATA1` early, `HBB` in maturing
+  red cells.
+- `LYZ` and `S100A8` mark monocytes, the mature end of the myeloid branch. You
+  will likely find a large population of these. `MPO` also marks the myeloid
+  branch, but *early* — it is expressed in immature granulocyte precursors and
+  switched off as they mature, so it will not light up the mature monocytes.
+  This is worth noticing in general: a marker is specific to a stage, not just a
+  lineage.
+- `CD79A` marks B cells, which do develop in bone marrow.
+- `CD3E` marks T cells and `NKG7` NK cells.
+
+Look at where the T cells sit. They should form their own island, disconnected
+from everything else. That is correct biology, not a problem with the analysis:
+T cells *develop in the thymus*, not the bone marrow. The T cells here are mature
+cells that have migrated back through the circulation. There is no T cell
+differentiation happening in this tissue, so there is no trajectory to find —
+and we will see below whether the algorithm correctly declines to invent one.
+If you can see the other lineages arranged around a common progenitor origin,
+there is a trajectory to find.
 
 ## Converting to a cell_data_set
 
@@ -152,9 +186,9 @@ cds <- seurat_to_cds(bm, reductions = c(pca = "PCA", umap = "UMAP"))
 cds
 ```
 
-Read `seurat_to_cds.R` if you have not. It is about thirty lines: pull the
-counts, build a table of cell metadata and a table of gene metadata, hand all
-three to `new_cell_data_set()`, and copy the reductions across. A
+Read `seurat_to_cds.R` if you have not. It is about thirty lines: it pulls the
+counts, builds a table of cell metadata and a table of gene metadata, hands all
+three to `new_cell_data_set()`, and copies the reductions across. A
 `cell_data_set` is not a mysterious object, and knowing what a wrapper actually
 does is worth the ten minutes.
 
@@ -171,6 +205,12 @@ cds <- cluster_cells(cds, reduction_method = "UMAP")
 plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE,
            group_label_size = 4)
 ```
+
+Look for the T cells here. If monocle3 has put them in their own partition, it
+has correctly declined to connect them to the rest — which is the right answer,
+since there is no T cell differentiation happening in bone marrow. Had it joined
+them to the progenitors, the trajectory would be drawing a developmental path
+that does not exist.
 
 Partitions matter more than they look. Cells in different partitions get
 separate trajectories with separate roots. If monocle3 splits something you
@@ -274,8 +314,16 @@ the plot.
 
 ```{r}
 #| label: graph-test
-graph_res <- graph_test(cds, neighbor_graph = "principal_graph", cores = 4)
+#| output: false
+# graph_test reports on every gene it tests -- thousands of lines of progress
+# output that tell you nothing useful. output: false hides it; the results
+# themselves are shown in the next chunk.
+graph_res <- graph_test(cds, neighbor_graph = "principal_graph",
+                        cores = 4, verbose = FALSE)
+```
 
+```{r}
+#| label: graph-test-results
 graph_res |>
   filter(q_value < 0.01) |>
   arrange(desc(morans_I)) |>

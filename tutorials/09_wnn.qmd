@@ -39,16 +39,31 @@ This tutorial then does something ATAC makes possible and RNA does not: infers
 which **transcription factors** are active in each cell, by asking which binding
 motifs are enriched in the regions that cell has open.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial is the most demanding in the course. It needs about **64 GB of
-memory** and runs in **3–5 hours**, most of that in the chromVAR step.
+This is the most demanding tutorial in the course. We rendered it as a batch job
+with 16 cores:
 
 ```bash
-interactive -a cusanovichlab -n 16 -t 08:00:00
+#SBATCH --ntasks=16
+#SBATCH --time=04:00:00
 ```
 
-Do not run this interactively and wait. Write a batch script and come back.
+That is **64 GB** of memory, since memory comes with the cores at 4 GB each.
+When we rendered it, the whole tutorial took about 75 minutes, most of it in the
+chromVAR step.
+
+Do not run this interactively and wait. Write a batch script, submit it, and
+come back. If the job dies partway with a confusing error from deep inside a
+package, check whether it ran out of memory before anything else — the
+scheduler log will say so.
 
 ## Setup
 
@@ -78,7 +93,6 @@ set.seed(1234)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "wnn")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -151,41 +165,34 @@ p1 + p2 + p3
 The weights are the interesting output, and they are easy to overlook.
 
 `FindMultiModalNeighbors()` writes one weight column per modality into the
-metadata, named after the **assay** behind each reduction — not after the
-reduction. Our PCA was computed on the `SCT` assay, so the column is
-`SCT.weight` rather than `RNA.weight`. Find it rather than assuming:
-
-```{r}
-#| label: weight-columns
-weight_cols <- grep("\\.weight$", colnames(pbmc@meta.data), value = TRUE)
-weight_cols
-
-rna_weight <- weight_cols[1]
-summary(pbmc@meta.data[[rna_weight]])
-```
+metadata, named after the **assay** behind each reduction rather than after the
+reduction itself. Our PCA was computed on the `SCT` assay, so the RNA weight is
+in a column called `SCT.weight`, not `RNA.weight`.
 
 ```{r}
 #| label: weights
 #| fig-height: 6
-VlnPlot(pbmc, features = rna_weight, group.by = "seurat_clusters",
+VlnPlot(pbmc, features = "SCT.weight", group.by = "seurat_clusters",
         sort = TRUE, pt.size = 0.1) +
   NoLegend() +
-  labs(title = paste(rna_weight, "by cluster"),
+  labs(title = "RNA weight by cluster",
        subtitle = "1 = decided entirely by expression, 0 = entirely by chromatin")
 ```
 
 ```{r}
 #| label: weight-umap
-FeaturePlot(pbmc, reduction = "wnn.umap", features = rna_weight) +
+FeaturePlot(pbmc, reduction = "wnn.umap", features = "SCT.weight") +
   scale_colour_viridis_c() +
-  ggtitle(paste("Per-cell", rna_weight))
+  ggtitle("Per-cell RNA weight")
 ```
 
-Cells on the right of that violin plot were defined mostly by expression; those
-on the left by chromatin. This is a real result about your data rather than a
+Cells on the top of that violin plot were defined mostly by expression; those
+on the bottom by chromatin. This is a real result about your data rather than a
 diagnostic. If a population sits near 0.5, both modalities contributed — and if
 one sits at an extreme, that tells you something about which measurement carries
-the information for that cell type.
+the information for that cell type. Notice that the main distribution for all
+clusters centers just above 0.5. That means RNA tends to be more informative for
+clustering across the board, but only slightly.
 
 ## Motif analysis
 
@@ -363,13 +370,11 @@ A factor appearing here is expressed *and* has enriched motif accessibility in
 that cluster. That is much better evidence than either alone — though still
 correlative, and still a hypothesis rather than a result.
 
-## What motif activity cannot tell you
+## Careful interpretation of motif data
 
-Worth being explicit, because chromVAR output is easy to over-read.
-
-Motifs are short and degenerate. A given motif occurs in far more places in the
-genome than the factor actually binds, so motif presence is a weak proxy for
-occupancy.
+As you analyze motifs, keep in mind that motifs are short and degenerate. A given
+motif occurs in far more places in the genome than the factor actually binds, so
+motif presence is a weak proxy for occupancy.
 
 Related factors share motifs. Many JASPAR entries are near-identical across a
 family, and chromVAR cannot distinguish family members. A "CEBPB" signal may
@@ -379,9 +384,11 @@ And an enriched motif does not establish direction. A factor's sites being open
 is consistent with it binding there, with it having bound previously, or with
 something else keeping that chromatin accessible.
 
-What this is good for is generating a short list of candidate regulators from an
-unbiased genome-wide measurement. The next step is a perturbation, a ChIP, or a
-footprinting analysis — not a stronger claim from the same data.
+Having said all that, this is a genuinely powerful approach, especially for
+developing specific, testable hypotheses. We get a short list of candidate
+regulators from an unbiased genome-wide measurement. The next step is a
+perturbation, a ChIP, or a footprinting analysis, but at least now we know which
+ones to test.
 
 ## Save your work
 

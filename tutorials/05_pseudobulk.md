@@ -4,21 +4,22 @@
 - [Before you start](#before-you-start)
 - [Setup](#setup)
 - [The data](#the-data)
+- [A first look at the cells](#a-first-look-at-the-cells)
 - [Building pseudobulk profiles](#building-pseudobulk-profiles)
 - [Filtering](#filtering)
 - [Normalization](#normalization)
 - [Looking at the structure](#looking-at-the-structure)
-- [Setting up the test](#setting-up-the-test)
-- [Estimating dispersion](#estimating-dispersion)
-- [Testing](#testing)
-- [Comparing against the cell-level
-  test](#comparing-against-the-cell-level-test)
+- [The design](#the-design)
+- [Dispersion](#dispersion)
+- [Marker genes for each cluster](#marker-genes-for-each-cluster)
+- [Heatmap of top markers](#heatmap-of-top-markers)
+- [A note on conditions](#a-note-on-conditions)
 - [Save your work](#save-your-work)
 - [Session information](#session-information)
 
 By now you have found marker genes with `FindAllMarkers()`, which tests
 every cell against every other cell. That works for identifying cell
-types, and it is the wrong tool for asking whether a gene differs
+types, but it is the wrong tool for asking whether a gene differs
 between *conditions*.
 
 The reason is that cells from the same donor are not independent
@@ -36,585 +37,546 @@ type. You then analyze those profiles with the same tools people have
 used for bulk RNA-seq for fifteen years, which are well-tested and which
 treat samples as the unit of replication — because they are.
 
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **16 GB of memory** and runs in **15–20
-minutes**.
+We rendered this tutorial with:
 
 ``` bash
-interactive -a cusanovichlab -n 8 -t 02:00:00
+interactive -a cusanovichlab -n 4 -t 02:00:00
 ```
 
-The `interactive` command takes `-m` as memory **per core**, so `-n 8`
-with the default 4 GB per core gives you 32 GB in total. There is no
-`--mem` flag.
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **16 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for. Pseudobulk profiles are small: the
+heavy lifting collapses ten thousand cells into a few dozen columns.
+
+It took about **2 minutes** to run when we did it. Ask for more time
+than you expect to need — a job that hits its limit is killed part way
+through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
 ``` r
 library(Seurat)
-library(SeuratData)
 library(edgeR)
 library(ggplot2)
-library(dplyr)
+library(pheatmap)
 
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
-
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "pseudobulk")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
 
-SHARED_DATA <- "/groups/darrenc/cmm_523/references/Rdatalib"
-MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
-dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
-.libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
-
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "05_pseudobulk/"
-  )
-)
+SHARED <- "/groups/darrenc/cmm_523/references/edgeR_pal"
 
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/pseudobulk"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/pseudobulk"
 
 ## The data
 
-We will reuse the pancreas dataset from the [integration
-tutorial](03_integration.md). It is well suited to this: eight donors,
-five technologies, and published cell type labels. Donor is our unit of
-replication.
+We will use the same dataset as the pseudobulk case study in the edgeR
+User’s Guide (section 4.10), so you can compare your results directly
+against theirs — a useful check that nothing has gone wrong.
+
+The data come from a single-cell atlas of human breast tissue (Pal et
+al. 2021, *EMBO Journal*). This subset contains normal breast epithelium
+from 13 donors, already clustered by the original authors, and trimmed
+to 2,000 genes to keep it small.
 
 ``` r
-if (!requireNamespace("panc8.SeuratData", quietly = TRUE)) {
-  InstallData("panc8")
-}
-data("panc8", package = "panc8.SeuratData")
-panc8 <- UpdateSeuratObject(panc8)
+seu_file <- file.path(SHARED, "SeuratObj.rds")
 
-table(panc8$dataset, panc8$celltype)[, 1:6]
+if (!file.exists(seu_file)) {
+  seu_file <- file.path(WORK, "SeuratObj.rds")
+  if (!file.exists(seu_file)) {
+    download.file("https://bioinf.wehi.edu.au/edgeR/UserGuideData/SeuratObj.rds",
+                  seu_file, mode = "wb")
+  }
+}
+
+raw <- readRDS(seu_file)
+
+# This object was saved years ago, and it was subset to 2,000 genes without its
+# gene-level metadata being updated to match. So it carries a meta.features
+# table describing the full gene set, and a var.features list naming genes that
+# are no longer in it. Seurat does not complain on load, but the first operation
+# that revalidates the assay fails with "'meta.features' must have the same
+# number of rows as 'data'".
+#
+# Rather than patch that, rebuild a clean object from the counts and the cell
+# metadata, which is all we actually need. This is a useful move to know: when
+# an object you were given misbehaves, you can usually extract the parts that
+# matter and start again.
+# Note `layer`, not `slot`. The `slot` argument is defunct in SeuratObject 5 --
+# not merely deprecated, so it errors rather than warns. Older code and
+# tutorials you find will use `slot`; this is the Seurat 5 spelling.
+counts <- SeuratObject::GetAssayData(raw, assay = "RNA", layer = "counts")
+meta   <- raw@meta.data
+
+seu <- CreateSeuratObject(counts = counts, meta.data = meta)
+seu
 ```
 
-    #>             
-    #>              acinar activated_stellate alpha beta delta ductal
-    #>   celseq        229                 19   213  161    50    304
-    #>   celseq2       274                 90   844  445   203    257
-    #>   fluidigmc1     21                 16   241  258    25     34
-    #>   indrop1       113                 69   241  868   216    128
-    #>   indrop2       115                 79   659  373   127    199
-    #>   indrop3       845                102  1116  781   161    385
-    #>   indrop4        79                 44   293  485   104    203
-    #>   smartseq2     188                 55  1008  308   127    444
+    #> An object of class Seurat 
+    #> 13527 features across 10000 samples within 1 assay 
+    #> Active assay: RNA (13527 features, 0 variable features)
+    #>  1 layer present: counts
 
-Look at that table before going further, because it determines what
-questions you can ask. Each row is a donor, each column a cell type, and
-the numbers are cell counts. Zeros and single digits are cell types that
-donor barely contributed — those will produce pseudobulk profiles you
-should not trust, and we filter them out below.
+``` r
+head(seu@meta.data)
+```
+
+    #>                                 orig.ident nCount_RNA nFeature_RNA        group
+    #> N_0019_total_AAACCTGAGGGCTCTC-1          N       7886         2419 N_0019_total
+    #> N_0019_total_AAACCTGGTACCGCTG-1          N       2306         1018 N_0019_total
+    #> N_0019_total_AAACCTGTCTAGCACA-1          N       8569         2411 N_0019_total
+    #> N_0019_total_AAACGGGAGGACAGAA-1          N       3774         1311 N_0019_total
+    #> N_0019_total_AAACGGGCATATGAGA-1          N       5689         1753 N_0019_total
+    #> N_0019_total_AAAGCAAGTGTAAGTA-1          N       3684         1350 N_0019_total
+    #>                                 integrated_snn_res.0.05 seurat_clusters
+    #> N_0019_total_AAACCTGAGGGCTCTC-1                       1               1
+    #> N_0019_total_AAACCTGGTACCGCTG-1                       0               0
+    #> N_0019_total_AAACCTGTCTAGCACA-1                       0               0
+    #> N_0019_total_AAACGGGAGGACAGAA-1                       0               0
+    #> N_0019_total_AAACGGGCATATGAGA-1                       1               1
+    #> N_0019_total_AAAGCAAGTGTAAGTA-1                       3               3
+
+``` r
+table(seu$group)
+```
+
+    #> 
+    #>    N_0019_total    N_0021_total    N_0064_total    N_0092_total    N_0093_total 
+    #>             721             303             208             408            1079 
+    #>    N_0123_total    N_0169_total N_0230.17_total    N_0233_total    N_0275_total 
+    #>             666            1416             968            1170             245 
+    #>    N_0288_total    N_0342_total    N_0372_total 
+    #>             416            1685             715
+
+``` r
+table(seu$seurat_clusters)
+```
+
+    #> 
+    #>    0    1    2    3    4    5    6 
+    #> 4373 2943 1634  380  386  162  122
+
+`group` identifies the donor each cell came from, and `seurat_clusters`
+holds the cell clusters from the original analysis. Those are the two
+things pseudobulk needs: a unit of replication and the groups you want
+to compare.
+
+## A first look at the cells
+
+The edgeR guide shows these clusters on a t-SNE plot. We will use UMAP,
+which you have already seen.
+
+``` r
+seu <- NormalizeData(seu)
+seu <- FindVariableFeatures(seu)
+seu <- ScaleData(seu)
+seu <- RunPCA(seu)
+seu <- RunUMAP(seu, dims = 1:20)
+
+DimPlot(seu, reduction = "umap", group.by = "seurat_clusters", label = TRUE) +
+  NoLegend()
+```
+
+![](figs/05_pseudobulk-umap-1.png)
+
+The clusters come from the original authors, not from us. Our UMAP is a
+fresh embedding of the same cells, so it will not look identical to
+their t-SNE — but the same cluster labels should still group together.
+
+``` r
+DimPlot(seu, reduction = "umap", group.by = "group") +
+  ggtitle("Cells coloured by donor")
+```
+
+![](figs/05_pseudobulk-umap-donor-1.png)
+
+Compare the two plots. If cells separated by donor rather than by
+cluster, that would be a warning that donor differences were as large as
+cell type differences. Here the donors are mixed within each cluster,
+which is what you want to see.
 
 ## Building pseudobulk profiles
 
-edgeR provides `Seurat2PB()`, which does the aggregation for you. You
-tell it which metadata column identifies the sample and which identifies
-the cluster.
+edgeR provides `Seurat2PB()`, which sums the counts for every
+combination of sample and cluster.
 
 ``` r
-y <- Seurat2PB(panc8, sample = "dataset", cluster = "celltype")
+y <- Seurat2PB(seu, sample = "group", cluster = "seurat_clusters")
+
+# Seurat2PB copies whatever gene-level metadata the Seurat object was carrying
+# into y$genes, and edgeR prints that alongside its results. Our object picked
+# up columns from FindVariableFeatures() when we made the UMAP above, which
+# would push logFC and the p-values off the right-hand edge of every results
+# table. Keep just the gene names.
+y$genes <- data.frame(gene = rownames(y), row.names = rownames(y))
 
 y
 ```
 
     #> An object of class "DGEList"
     #> $counts
-    #>          celseq_clusteracinar celseq_clusteractivated_stellate
-    #> A1BG-AS1             0.000000                          0.00000
-    #> A1BG                50.145186                         20.07069
-    #> A1CF               105.459179                          0.00000
-    #> A2M-AS1              4.007833                          0.00000
-    #> A2ML1                6.011749                          0.00000
-    #>          celseq_clusteralpha celseq_clusterbeta celseq_clusterdelta
-    #> A1BG-AS1            4.011770           0.000000            0.000000
-    #> A1BG              149.604332         134.630195           27.116019
-    #> A1CF              188.906452          27.088398           21.076587
-    #> A2M-AS1             7.017645           5.009791            2.003916
-    #> A2ML1              33.470069           2.003916            0.000000
-    #>          celseq_clusterductal celseq_clusterendothelial celseq_clusterepsilon
-    #> A1BG-AS1             0.000000                         0              0.000000
-    #> A1BG                11.021540                         0              1.001958
-    #> A1CF                38.153370                         0              2.007853
-    #> A2M-AS1              0.000000                         0              0.000000
-    #> A2ML1                8.019603                         0              0.000000
-    #>          celseq_clustergamma celseq_clustermacrophage celseq_clustermast
-    #> A1BG-AS1            0.000000                        0                  0
-    #> A1BG               15.053026                        0                  0
-    #> A1CF               11.029414                        0                  0
-    #> A2M-AS1             0.000000                        0                  0
-    #> A2ML1               1.001958                        0                  0
-    #>          celseq_clusterquiescent_stellate celseq_clusterschwann
-    #> A1BG-AS1                         0.000000                     0
-    #> A1BG                             1.001958                     0
-    #> A1CF                             0.000000                     0
-    #> A2M-AS1                          0.000000                     0
-    #> A2ML1                            0.000000                     0
-    #>          celseq2_clusteracinar celseq2_clusteractivated_stellate
-    #> A1BG-AS1              0.000000                          2.003916
-    #> A1BG                 10.019582                         30.090367
-    #> A1CF                699.698200                         11.065160
-    #> A2M-AS1               4.007833                          5.009791
-    #> A2ML1                14.031352                          3.005875
-    #>          celseq2_clusteralpha celseq2_clusterbeta celseq2_clusterdelta
-    #> A1BG-AS1              0.00000            0.000000             0.000000
-    #> A1BG                121.29600           86.298952            23.056850
-    #> A1CF               3369.28402          759.981363           405.493117
-    #> A2M-AS1              21.04506           14.027415             4.007833
-    #> A2ML1                11.02154            6.011749             6.011749
-    #>          celseq2_clusterductal celseq2_clusterendothelial
-    #> A1BG-AS1              0.000000                   0.000000
-    #> A1BG                  4.007833                   0.000000
-    #> A1CF                103.757833                   2.003916
-    #> A2M-AS1               4.011770                   0.000000
-    #> A2ML1                 8.015666                   1.001958
-    #>          celseq2_clusterepsilon celseq2_clustergamma celseq2_clustermacrophage
-    #> A1BG-AS1                0.00000             0.000000                  0.000000
-    #> A1BG                    0.00000            17.037227                  0.000000
-    #> A1CF                   15.12049           194.422622                  6.071431
-    #> A2M-AS1                 0.00000             3.005875                  0.000000
-    #> A2ML1                   0.00000             2.003916                  1.001958
-    #>          celseq2_clustermast celseq2_clusterquiescent_stellate
-    #> A1BG-AS1             0.00000                          0.000000
-    #> A1BG                 0.00000                          5.009791
-    #> A1CF                 0.00000                          1.001958
-    #> A2M-AS1              4.01177                          3.009812
-    #> A2ML1                0.00000                          0.000000
-    #>          celseq2_clusterschwann fluidigmc1_clusteracinar
-    #> A1BG-AS1                      0                     0.00
-    #> A1BG                          0                   255.05
-    #> A1CF                          0                   958.00
-    #> A2M-AS1                       0                     0.00
-    #> A2ML1                         0                    51.72
-    #>          fluidigmc1_clusteractivated_stellate fluidigmc1_clusteralpha
-    #> A1BG-AS1                                 0.00                    0.00
-    #> A1BG                                   339.33                 4883.81
-    #> A1CF                                     0.00                40326.32
-    #> A2M-AS1                                  0.00                    0.00
-    #> A2ML1                                   27.40                  457.93
-    #>          fluidigmc1_clusterbeta fluidigmc1_clusterdelta
-    #> A1BG-AS1                   0.00                    0.00
-    #> A1BG                    5873.97                  287.50
-    #> A1CF                   11919.00                 2227.50
-    #> A2M-AS1                    0.00                    0.00
-    #> A2ML1                    533.85                   95.86
-    #>          fluidigmc1_clusterductal fluidigmc1_clusterendothelial
-    #> A1BG-AS1                     0.00                          0.00
-    #> A1BG                       395.57                        151.73
-    #> A1CF                       114.13                        681.00
-    #> A2M-AS1                      0.00                          0.00
-    #> A2ML1                      244.09                         21.73
-    #>          fluidigmc1_clusterepsilon fluidigmc1_clustergamma
-    #> A1BG-AS1                      0.00                     0.0
-    #> A1BG                         21.55                   477.3
-    #> A1CF                          8.00                  1580.0
-    #> A2M-AS1                       0.00                     0.0
-    #> A2ML1                         3.22                    48.6
-    #>          fluidigmc1_clustermacrophage fluidigmc1_clustermast
-    #> A1BG-AS1                         0.00                   0.00
-    #> A1BG                            45.44                   9.81
-    #> A1CF                             0.00                 149.00
-    #> A2M-AS1                          0.00                   0.00
-    #> A2ML1                            5.81                   5.12
-    #>          fluidigmc1_clusterquiescent_stellate fluidigmc1_clusterschwann
-    #> A1BG-AS1                                 0.00                      0.00
-    #> A1BG                                     8.49                     21.86
-    #> A1CF                                     0.00                    191.00
-    #> A2M-AS1                                  0.00                      0.00
-    #> A2ML1                                    0.00                     14.04
-    #>          indrop1_clusteracinar indrop1_clusteractivated_stellate
-    #> A1BG-AS1                     0                                 0
-    #> A1BG                         0                                 1
-    #> A1CF                        33                                 0
-    #> A2M-AS1                      0                                 0
-    #> A2ML1                        0                                 0
-    #>          indrop1_clusteralpha indrop1_clusterbeta indrop1_clusterdelta
-    #> A1BG-AS1                    0                   0                    0
-    #> A1BG                        2                  13                    2
-    #> A1CF                      106                 162                   71
-    #> A2M-AS1                     0                   0                    0
-    #> A2ML1                       0                   0                    0
-    #>          indrop1_clusterductal indrop1_clusterendothelial
-    #> A1BG-AS1                     0                          0
-    #> A1BG                         0                          1
-    #> A1CF                        11                          4
-    #> A2M-AS1                      0                          0
-    #> A2ML1                        0                          0
-    #>          indrop1_clusterepsilon indrop1_clustergamma indrop1_clustermacrophage
-    #> A1BG-AS1                      0                    0                         0
-    #> A1BG                          1                    3                         0
-    #> A1CF                          8                   16                         0
-    #> A2M-AS1                       0                    0                         0
-    #> A2ML1                         0                    0                         0
-    #>          indrop1_clustermast indrop1_clusterquiescent_stellate
-    #> A1BG-AS1                   0                                 0
-    #> A1BG                       0                                 2
-    #> A1CF                       0                                 0
-    #> A2M-AS1                    0                                 0
-    #> A2ML1                      0                                 0
-    #>          indrop1_clusterschwann indrop2_clusteracinar
-    #> A1BG-AS1                      0                     0
-    #> A1BG                          0                     0
-    #> A1CF                          0                    17
-    #> A2M-AS1                       0                     0
-    #> A2ML1                         0                     0
-    #>          indrop2_clusteractivated_stellate indrop2_clusteralpha
-    #> A1BG-AS1                                 0                    0
-    #> A1BG                                     0                    4
-    #> A1CF                                     2                  360
-    #> A2M-AS1                                  0                    0
-    #> A2ML1                                    0                    0
-    #>          indrop2_clusterbeta indrop2_clusterdelta indrop2_clusterductal
-    #> A1BG-AS1                   0                    0                     0
-    #> A1BG                       2                    2                     1
-    #> A1CF                      42                   63                     9
-    #> A2M-AS1                    0                    0                     0
-    #> A2ML1                      0                    0                     0
-    #>          indrop2_clusterendothelial indrop2_clusterepsilon indrop2_clustergamma
-    #> A1BG-AS1                          0                      0                    0
-    #> A1BG                              0                      0                    1
-    #> A1CF                              0                      0                   25
-    #> A2M-AS1                           0                      0                    0
-    #> A2ML1                             0                      0                    0
-    #>          indrop2_clustermacrophage indrop2_clustermast
-    #> A1BG-AS1                         0                   0
-    #> A1BG                             0                   0
-    #> A1CF                             4                   2
-    #> A2M-AS1                          0                   0
-    #> A2ML1                            0                   0
-    #>          indrop2_clusterquiescent_stellate indrop2_clusterschwann
-    #> A1BG-AS1                                 0                      0
-    #> A1BG                                     0                      0
-    #> A1CF                                     1                      0
-    #> A2M-AS1                                  0                      0
-    #> A2ML1                                    0                      0
-    #>          indrop3_clusteracinar indrop3_clusteractivated_stellate
-    #> A1BG-AS1                     0                                 0
-    #> A1BG                         1                                 0
-    #> A1CF                       103                                 1
-    #> A2M-AS1                      0                                 0
-    #> A2ML1                        0                                 0
-    #>          indrop3_clusteralpha indrop3_clusterbeta indrop3_clusterdelta
-    #> A1BG-AS1                    0                   0                    0
-    #> A1BG                        1                   1                    2
-    #> A1CF                      325                  99                   34
-    #> A2M-AS1                     0                   0                    0
-    #> A2ML1                       0                   0                    0
-    #>          indrop3_clusterductal indrop3_clusterendothelial
-    #> A1BG-AS1                     0                          0
-    #> A1BG                         0                          0
-    #> A1CF                         7                          0
-    #> A2M-AS1                      0                          0
-    #> A2ML1                        0                          0
-    #>          indrop3_clusterepsilon indrop3_clustergamma indrop3_clustermacrophage
-    #> A1BG-AS1                      0                    0                         0
-    #> A1BG                          0                    0                         0
-    #> A1CF                          1                   14                         0
-    #> A2M-AS1                       0                    0                         0
-    #> A2ML1                         0                    0                         0
-    #>          indrop3_clustermast indrop3_clusterquiescent_stellate
-    #> A1BG-AS1                   0                                 0
-    #> A1BG                       0                                 0
-    #> A1CF                       0                                 2
-    #> A2M-AS1                    0                                 0
-    #> A2ML1                      0                                 0
-    #>          indrop3_clusterschwann indrop4_clusteracinar
-    #> A1BG-AS1                      0                     0
-    #> A1BG                          0                     0
-    #> A1CF                          0                    35
-    #> A2M-AS1                       0                     0
-    #> A2ML1                         0                     0
-    #>          indrop4_clusteractivated_stellate indrop4_clusteralpha
-    #> A1BG-AS1                                 0                    0
-    #> A1BG                                     0                    1
-    #> A1CF                                     1                  221
-    #> A2M-AS1                                  0                    0
-    #> A2ML1                                    0                    0
-    #>          indrop4_clusterbeta indrop4_clusterdelta indrop4_clusterductal
-    #> A1BG-AS1                   0                    0                     0
-    #> A1BG                       2                    1                     0
-    #> A1CF                      59                   47                     6
-    #> A2M-AS1                    0                    0                     0
-    #> A2ML1                      0                    0                     0
-    #>          indrop4_clusterendothelial indrop4_clusterepsilon indrop4_clustergamma
-    #> A1BG-AS1                          0                      0                    0
-    #> A1BG                              0                      0                    0
-    #> A1CF                              0                      0                   27
-    #> A2M-AS1                           0                      0                    0
-    #> A2ML1                             0                      0                    0
-    #>          indrop4_clustermacrophage indrop4_clustermast
-    #> A1BG-AS1                         0                   0
-    #> A1BG                             0                   0
-    #> A1CF                             0                   1
-    #> A2M-AS1                          0                   0
-    #> A2ML1                            0                   0
-    #>          indrop4_clusterquiescent_stellate indrop4_clusterschwann
-    #> A1BG-AS1                                 0                      0
-    #> A1BG                                     0                      0
-    #> A1CF                                     0                      0
-    #> A2M-AS1                                  0                      0
-    #> A2ML1                                    0                      0
-    #>          smartseq2_clusteracinar smartseq2_clusteractivated_stellate
-    #> A1BG-AS1                      21                                  69
-    #> A1BG                         474                                1436
-    #> A1CF                        3970                                  42
-    #> A2M-AS1                       33                                   3
-    #> A2ML1                          3                                   0
-    #>          smartseq2_clusteralpha smartseq2_clusterbeta smartseq2_clusterdelta
-    #> A1BG-AS1                    720                   123                     26
-    #> A1BG                      27049                  5677                   2706
-    #> A1CF                      52724                  4273                   4723
-    #> A2M-AS1                     884                   448                    109
-    #> A2ML1                        31                    34                      0
-    #>          smartseq2_clusterductal smartseq2_clusterendothelial
-    #> A1BG-AS1                      20                            4
-    #> A1BG                         289                          145
-    #> A1CF                        1266                            0
-    #> A2M-AS1                      184                           19
-    #> A2ML1                         11                            0
-    #>          smartseq2_clusterepsilon smartseq2_clustergamma
-    #> A1BG-AS1                        0                    179
-    #> A1BG                           89                   7807
-    #> A1CF                         1003                   7228
-    #> A2M-AS1                         0                    301
-    #> A2ML1                           0                     16
-    #>          smartseq2_clustermacrophage smartseq2_clustermast
-    #> A1BG-AS1                           0                     8
-    #> A1BG                              72                    88
-    #> A1CF                              35                     1
-    #> A2M-AS1                           23                     0
-    #> A2ML1                              0                     0
-    #>          smartseq2_clusterquiescent_stellate smartseq2_clusterschwann
-    #> A1BG-AS1                                   2                        0
-    #> A1BG                                      48                       51
-    #> A1CF                                      83                        0
-    #> A2M-AS1                                    1                        0
-    #> A2ML1                                      0                        0
-    #> 34358 more rows ...
+    #>        N_0019_total_cluster0 N_0019_total_cluster1 N_0019_total_cluster2
+    #> MALAT1                 41643                 97838                 15572
+    #> FTH1                   19273                 34629                  3878
+    #> RPS18                  10975                 17979                  2817
+    #> MT2A                   19401                 39831                  8798
+    #> RPL41                   9860                 18402                  2943
+    #>        N_0019_total_cluster3 N_0019_total_cluster4 N_0019_total_cluster5
+    #> MALAT1                 10167                  3796                  4592
+    #> FTH1                    8029                   571                  2639
+    #> RPS18                    612                   546                  1607
+    #> MT2A                     388                   115                  2638
+    #> RPL41                    635                   587                  1283
+    #>        N_0019_total_cluster6 N_0021_total_cluster0 N_0021_total_cluster1
+    #> MALAT1                  3357                   974                 12588
+    #> FTH1                    1014                   782                  9441
+    #> RPS18                    369                   324                  5321
+    #> MT2A                     235                   897                 12799
+    #> RPL41                    349                   467                  7196
+    #>        N_0021_total_cluster2 N_0021_total_cluster3 N_0021_total_cluster4
+    #> MALAT1                  2803                   331                   136
+    #> FTH1                    1632                    77                   146
+    #> RPS18                    999                    41                    48
+    #> MT2A                    2647                    34                    81
+    #> RPL41                   1549                    54                    58
+    #>        N_0021_total_cluster5 N_0021_total_cluster6 N_0064_total_cluster0
+    #> MALAT1                   666                   422                  3523
+    #> FTH1                     237                   550                  2390
+    #> RPS18                    110                    98                  1002
+    #> MT2A                     221                    96                  1857
+    #> RPL41                    192                   167                  1015
+    #>        N_0064_total_cluster1 N_0064_total_cluster2 N_0064_total_cluster3
+    #> MALAT1                  8200                  2637                    46
+    #> FTH1                    3642                   907                   100
+    #> RPS18                   1359                   433                     1
+    #> MT2A                    2741                  1133                    21
+    #> RPL41                   1416                   554                     2
+    #>        N_0064_total_cluster5 N_0092_total_cluster0 N_0092_total_cluster1
+    #> MALAT1                   174                 12699                 24673
+    #> FTH1                      14                 13870                 14720
+    #> RPS18                      1                  5392                  9635
+    #> MT2A                       5                  4922                 17006
+    #> RPL41                     11                  4870                  8752
+    #>        N_0092_total_cluster2 N_0092_total_cluster3 N_0092_total_cluster4
+    #> MALAT1                  6159                  1847                   170
+    #> FTH1                    2151                  3745                    29
+    #> RPS18                   1502                   200                    60
+    #> MT2A                    3809                   229                     2
+    #> RPL41                   1783                   202                    35
+    #>        N_0092_total_cluster5 N_0093_total_cluster0 N_0093_total_cluster1
+    #> MALAT1                  1121                 43122                114821
+    #> FTH1                    1430                 33417                 33721
+    #> RPS18                   1047                  6533                 12411
+    #> MT2A                     740                 28099                 22651
+    #> RPL41                    789                  4409                  9696
+    #>        N_0093_total_cluster2 N_0093_total_cluster3 N_0093_total_cluster4
+    #> MALAT1                 47892                  2503                   980
+    #> FTH1                   16650                  1607                   171
+    #> RPS18                   5908                    40                   125
+    #> MT2A                   24054                   203                     7
+    #> RPL41                   4662                    38                   108
+    #>        N_0093_total_cluster5 N_0093_total_cluster6 N_0123_total_cluster0
+    #> MALAT1                  1855                  8825                 24808
+    #> FTH1                     618                  4621                 17569
+    #> RPS18                    245                   787                  7712
+    #> MT2A                     386                   944                 16003
+    #> RPL41                    161                   559                  7018
+    #>        N_0123_total_cluster1 N_0123_total_cluster2 N_0123_total_cluster3
+    #> MALAT1                 21661                  4949                  3755
+    #> FTH1                    7221                  1990                  2872
+    #> RPS18                   3852                  1121                   590
+    #> MT2A                    7872                  3648                   295
+    #> RPL41                   3220                  1150                   490
+    #>        N_0123_total_cluster4 N_0123_total_cluster5 N_0123_total_cluster6
+    #> MALAT1                   108                  4741                   222
+    #> FTH1                      30                  2779                    69
+    #> RPS18                     27                  1366                    57
+    #> MT2A                       5                  1220                    68
+    #> RPL41                     50                  1214                    42
+    #>        N_0169_total_cluster0 N_0169_total_cluster1 N_0169_total_cluster2
+    #> MALAT1                109483                114053                 39633
+    #> FTH1                   27384                 11107                  3309
+    #> RPS18                  14869                  8344                  3752
+    #> MT2A                   22590                 21793                 12130
+    #> RPL41                  26633                 14992                  7314
+    #>        N_0169_total_cluster3 N_0169_total_cluster4 N_0169_total_cluster5
+    #> MALAT1                 41650                 16670                  1818
+    #> FTH1                   22764                  3182                   276
+    #> RPS18                   1548                   985                   243
+    #> MT2A                    3463                    98                   456
+    #> RPL41                   2679                  1934                   386
+    #>        N_0169_total_cluster6 N_0230.17_total_cluster0 N_0230.17_total_cluster1
+    #> MALAT1                  6730                   130584                   116906
+    #> FTH1                    1546                    77757                    39674
+    #> RPS18                    898                    31980                    23732
+    #> MT2A                     570                    68195                    76313
+    #> RPL41                   1541                    42289                    33918
+    #>        N_0230.17_total_cluster2 N_0230.17_total_cluster3
+    #> MALAT1                    28949                     9116
+    #> FTH1                       6105                     4084
+    #> RPS18                      4292                      352
+    #> MT2A                      18998                      372
+    #> RPL41                      6776                      495
+    #>        N_0230.17_total_cluster4 N_0230.17_total_cluster5
+    #> MALAT1                     3479                     2960
+    #> FTH1                        233                     1449
+    #> RPS18                       402                      956
+    #> MT2A                         23                     1700
+    #> RPL41                       537                     1202
+    #>        N_0230.17_total_cluster6 N_0233_total_cluster0 N_0233_total_cluster1
+    #> MALAT1                     3535                188712                104530
+    #> FTH1                        965                 42008                 24038
+    #> RPS18                       760                 24728                 19462
+    #> MT2A                        412                 31354                 34342
+    #> RPL41                       984                 35890                 23473
+    #>        N_0233_total_cluster2 N_0233_total_cluster3 N_0233_total_cluster4
+    #> MALAT1                 68077                 39133                 30714
+    #> FTH1                    5049                 27910                  3742
+    #> RPS18                   7494                  1375                  2885
+    #> MT2A                   10226                  2595                   176
+    #> RPL41                  11348                  1982                  3827
+    #>        N_0233_total_cluster5 N_0233_total_cluster6 N_0275_total_cluster0
+    #> MALAT1                 16130                  9168                  6957
+    #> FTH1                    5546                  1082                  2444
+    #> RPS18                   2303                  1160                  1059
+    #> MT2A                    3301                   389                  1883
+    #> RPL41                   2863                  1436                   896
+    #>        N_0275_total_cluster1 N_0275_total_cluster2 N_0275_total_cluster3
+    #> MALAT1                 48362                 13810                   932
+    #> FTH1                    8356                  2060                    63
+    #> RPS18                   6812                  2202                    10
+    #> MT2A                   11647                  4475                     4
+    #> RPL41                   4893                  1823                     7
+    #>        N_0275_total_cluster4 N_0275_total_cluster5 N_0288_total_cluster0
+    #> MALAT1                   202                   467                  6729
+    #> FTH1                      44                   150                  2111
+    #> RPS18                     23                   142                  1315
+    #> MT2A                       0                    43                  1405
+    #> RPL41                     36                    84                  1102
+    #>        N_0288_total_cluster1 N_0288_total_cluster2 N_0288_total_cluster3
+    #> MALAT1                 76574                 28155                   207
+    #> FTH1                   22784                  4844                   401
+    #> RPS18                  12840                  3541                    24
+    #> MT2A                   35708                  7782                    22
+    #> RPL41                  10358                  3854                    19
+    #>        N_0288_total_cluster5 N_0342_total_cluster0 N_0342_total_cluster1
+    #> MALAT1                   699                 32025                176876
+    #> FTH1                     128                 18449                 57729
+    #> RPS18                     48                  5627                 18389
+    #> MT2A                     199                 28153                 85843
+    #> RPL41                     39                  6518                 23638
+    #>        N_0342_total_cluster2 N_0342_total_cluster3 N_0342_total_cluster4
+    #> MALAT1                 46573                  4575                   367
+    #> FTH1                    7237                  1887                    62
+    #> RPS18                   4223                    96                    37
+    #> MT2A                   21627                   581                    91
+    #> RPL41                   6812                   187                    61
+    #>        N_0342_total_cluster5 N_0342_total_cluster6 N_0372_total_cluster0
+    #> MALAT1                 11597                  1821                 43762
+    #> FTH1                    3889                  1425                 23044
+    #> RPS18                   1442                   166                  6666
+    #> MT2A                   14880                   249                 28806
+    #> RPL41                   1969                   204                  7098
+    #>        N_0372_total_cluster1 N_0372_total_cluster2 N_0372_total_cluster3
+    #> MALAT1                 53981                 17952                 12405
+    #> FTH1                   18134                  2652                  9208
+    #> RPS18                   5163                  1261                   222
+    #> MT2A                   27687                  7826                  1300
+    #> RPL41                   5991                  1679                   355
+    #>        N_0372_total_cluster4 N_0372_total_cluster5 N_0372_total_cluster6
+    #> MALAT1                  7434                  3343                  8310
+    #> FTH1                     704                  1016                  7728
+    #> RPS18                    587                   149                   645
+    #> MT2A                      53                   191                   575
+    #> RPL41                    710                   151                   825
+    #> 13522 more rows ...
     #> 
     #> $samples
-    #>                                  group  lib.size norm.factors sample
-    #> celseq_clusteracinar                 1 3561789.9            1 celseq
-    #> celseq_clusteractivated_stellate     1  247829.1            1 celseq
-    #> celseq_clusteralpha                  1 2236187.2            1 celseq
-    #> celseq_clusterbeta                   1 1320794.5            1 celseq
-    #> celseq_clusterdelta                  1  387488.4            1 celseq
-    #>                                             cluster
-    #> celseq_clusteracinar                         acinar
-    #> celseq_clusteractivated_stellate activated_stellate
-    #> celseq_clusteralpha                           alpha
-    #> celseq_clusterbeta                             beta
-    #> celseq_clusterdelta                           delta
-    #> 99 more rows ...
+    #>                       group lib.size norm.factors       sample cluster
+    #> N_0019_total_cluster0     1  1679441            1 N_0019_total       0
+    #> N_0019_total_cluster1     1  2225898            1 N_0019_total       1
+    #> N_0019_total_cluster2     1   350241            1 N_0019_total       2
+    #> N_0019_total_cluster3     1   133909            1 N_0019_total       3
+    #> N_0019_total_cluster4     1    49889            1 N_0019_total       4
+    #> 80 more rows ...
     #> 
     #> $genes
-    #>              gene
-    #> A1BG-AS1 A1BG-AS1
-    #> A1BG         A1BG
-    #> A1CF         A1CF
-    #> A2M-AS1   A2M-AS1
-    #> A2ML1       A2ML1
-    #> 34358 more rows ...
-
-What came back is a `DGEList` — edgeR’s bulk RNA-seq container. Columns
-are now sample-by-celltype combinations rather than cells. The object
-went from ~15,000 columns to a few dozen, which is the whole point.
+    #>          gene
+    #> MALAT1 MALAT1
+    #> FTH1     FTH1
+    #> RPS18   RPS18
+    #> MT2A     MT2A
+    #> RPL41   RPL41
+    #> 13522 more rows ...
 
 ``` r
-head(y$samples, 10)
+head(y$samples)
 ```
 
-    #>                                  group    lib.size norm.factors sample
-    #> celseq_clusteracinar                 1 3561789.896            1 celseq
-    #> celseq_clusteractivated_stellate     1  247829.098            1 celseq
-    #> celseq_clusteralpha                  1 2236187.217            1 celseq
-    #> celseq_clusterbeta                   1 1320794.524            1 celseq
-    #> celseq_clusterdelta                  1  387488.389            1 celseq
-    #> celseq_clusterductal                 1 3204483.688            1 celseq
-    #> celseq_clusterendothelial            1   36727.030            1 celseq
-    #> celseq_clusterepsilon                1    6746.376            1 celseq
-    #> celseq_clustergamma                  1  156647.518            1 celseq
-    #> celseq_clustermacrophage             1   20855.424            1 celseq
-    #>                                             cluster
-    #> celseq_clusteracinar                         acinar
-    #> celseq_clusteractivated_stellate activated_stellate
-    #> celseq_clusteralpha                           alpha
-    #> celseq_clusterbeta                             beta
-    #> celseq_clusterdelta                           delta
-    #> celseq_clusterductal                         ductal
-    #> celseq_clusterendothelial               endothelial
-    #> celseq_clusterepsilon                       epsilon
-    #> celseq_clustergamma                           gamma
-    #> celseq_clustermacrophage                 macrophage
+    #>                       group lib.size norm.factors       sample cluster
+    #> N_0019_total_cluster0     1  1679441            1 N_0019_total       0
+    #> N_0019_total_cluster1     1  2225898            1 N_0019_total       1
+    #> N_0019_total_cluster2     1   350241            1 N_0019_total       2
+    #> N_0019_total_cluster3     1   133909            1 N_0019_total       3
+    #> N_0019_total_cluster4     1    49889            1 N_0019_total       4
+    #> N_0019_total_cluster5     1   160445            1 N_0019_total       5
 
-``` r
-dim(y)
-```
-
-    #> [1] 34363   104
+What came back is a `DGEList` — edgeR’s container for bulk RNA-seq.
+Columns are now donor-by-cluster combinations rather than cells: about
+ten thousand columns became fewer than a hundred.
 
 ## Filtering
 
-Two filters matter here, and they do different jobs.
-
 First, drop pseudobulk profiles that are too thin to be worth anything.
-A profile aggregated from four cells is noise dressed up as data.
-
-`Seurat2PB()` does not report how many cells went into each profile, so
-we use library size as the stand-in: a profile built from very few cells
-has very few total counts. There is no universal threshold. Look at the
-distribution and pick somewhere sensible for your data rather than
-copying a number.
+A profile summed from a handful of cells is mostly noise. `Seurat2PB()`
+does not report how many cells went into each profile, so library size
+is the stand-in.
 
 ``` r
 summary(y$samples$lib.size)
 ```
 
-    #>      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
-    #>      1779     99458    882263  21178108   3591425 482480131
+    #>    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+    #>    1352   42181  165537  651543  776854 5011510
 
 ``` r
-hist(log10(y$samples$lib.size), breaks = 20,
-     xlab = "log10(library size)", main = "Pseudobulk profile depth")
-```
-
-![](figs/05_pseudobulk-lib-sizes-1.png)
-
-``` r
-MIN_LIB <- 5e4
-
-keep.samples <- y$samples$lib.size >= MIN_LIB
+keep.samples <- y$samples$lib.size > 5e4
 table(keep.samples)
 ```
 
     #> keep.samples
     #> FALSE  TRUE 
-    #>    21    83
+    #>    26    59
 
 ``` r
-# Fail loudly rather than silently returning an empty object. A filter that
-# removes everything is a mistake, not a result, and an empty DGEList produces
-# confusing errors several steps later rather than here.
+# Fail loudly rather than silently emptying the object.
 stopifnot(sum(keep.samples) >= 3)
 
 y <- y[, keep.samples]
-dim(y)
 ```
 
-    #> [1] 34363    83
-
-Second, drop genes that are not expressed at a useful level.
-`filterByExpr()` does this using the design of the experiment rather
-than a flat cutoff, which is why you pass it the group structure.
+Then drop genes not expressed at a useful level. `filterByExpr()` takes
+the group structure into account rather than applying a flat cutoff.
 
 ``` r
-keep.genes <- filterByExpr(y, group = y$samples$cluster)
+keep.genes <- filterByExpr(y, group = y$samples$cluster,
+                           min.count = 10, min.total.count = 20)
 table(keep.genes)
 ```
 
     #> keep.genes
     #> FALSE  TRUE 
-    #> 17752 16611
+    #>  5660  7867
 
 ``` r
-y <- y[keep.genes, , keep.lib.sizes = FALSE]
+y <- y[keep.genes, , keep = FALSE]
 dim(y)
 ```
 
-    #> [1] 16611    83
+    #> [1] 7867   59
 
 ## Normalization
 
 ``` r
 y <- normLibSizes(y)
-head(y$samples)
+summary(y$samples$norm.factors)
 ```
 
-    #>                                  group  lib.size norm.factors sample
-    #> celseq_clusteracinar                 1 3554613.4    0.7788234 celseq
-    #> celseq_clusteractivated_stellate     1  247493.3    1.1653558 celseq
-    #> celseq_clusteralpha                  1 2216342.3    0.9350082 celseq
-    #> celseq_clusterbeta                   1 1317700.5    1.0891185 celseq
-    #> celseq_clusterdelta                  1  386621.5    1.0746937 celseq
-    #> celseq_clusterductal                 1 3194707.9    1.1194747 celseq
-    #>                                             cluster
-    #> celseq_clusteracinar                         acinar
-    #> celseq_clusteractivated_stellate activated_stellate
-    #> celseq_clusteralpha                           alpha
-    #> celseq_clusterbeta                             beta
-    #> celseq_clusterdelta                           delta
-    #> celseq_clusterductal                         ductal
+    #>    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+    #>  0.6732  0.9154  1.0265  1.0094  1.1135  1.2853
 
 `normLibSizes()` computes TMM normalization factors, correcting for the
 fact that a handful of very highly expressed genes can otherwise make
-everything else look depleted. If you find older code calling
-`calcNormFactors()`, that is the previous name for this function — it
-still works, but `normLibSizes()` is the current one.
+everything else look depleted. You may see older code call this
+`calcNormFactors()` — same thing, previous name.
 
 ## Looking at the structure
 
-Before testing anything, look at how the samples relate to each other.
-An MDS plot is the bulk RNA-seq equivalent of a UMAP, and it will tell
-you immediately whether cell type or donor is the dominant source of
-variation.
+`plotMDS()` gives a view of the data analogous to UMAP, where the
+distance between each pair of points characterizes the similarity of
+those pseudobulk samples. We expect to see clustering of samples from
+the same cell type dominate over clustering of samples from the same
+subject.
 
 ``` r
-cluster <- factor(y$samples$cluster)
-plotMDS(y, col = as.numeric(cluster), pch = 16)
-legend("topright", legend = levels(cluster),
-       col = seq_along(levels(cluster)), pch = 16, cex = 0.7)
+cluster <- as.factor(y$samples$cluster)
+plotMDS(y, pch = 16, col = c(2:8)[cluster], main = "MDS")
+legend("bottomright", legend = paste0("cluster ", levels(cluster)),
+       pch = 16, col = 2:8, cex = 0.8)
 ```
 
 ![](figs/05_pseudobulk-mds-1.png)
 
-You want to see profiles grouping by cell type rather than by donor. If
-donors separated instead, that would be a warning: the differences
-between people would be larger than the differences between cell types,
-and any comparison you made would be confounded.
+## The design
 
-## Setting up the test
-
-We will ask which genes distinguish alpha cells from beta cells, while
-accounting for donor. That “while accounting for donor” is the reason to
-do any of this — it is what a cell-level test cannot do.
+We want to find genes that distinguish each cluster from the others,
+while accounting for differences between donors.
 
 ``` r
-donor   <- factor(y$samples$sample)
-cluster <- factor(y$samples$cluster)
-
-# Put alpha first so it becomes the reference level. Without this, R picks the
-# alphabetically first cell type (acinar), and every "cluster" coefficient
-# would be a comparison against acinar rather than against alpha. That is a
-# perfectly valid analysis -- it is just not the one we said we were doing,
-# and nothing in the output would tell you.
-cluster <- relevel(cluster, ref = "alpha")
-
-design <- model.matrix(~ donor + cluster)
-colnames(design) <- gsub("cluster", "", colnames(design))
+donor <- factor(y$samples$sample)
+design <- model.matrix(~ cluster + donor)
 colnames(design) <- gsub("donor", "", colnames(design))
-
-dim(design)
+colnames(design)[1] <- "Int"
+head(design)
 ```
 
-    #> [1] 83 20
+    #>   Int cluster1 cluster2 cluster3 cluster4 cluster5 cluster6 N_0021_total
+    #> 1   1        0        0        0        0        0        0            0
+    #> 2   1        1        0        0        0        0        0            0
+    #> 3   1        0        1        0        0        0        0            0
+    #> 4   1        0        0        1        0        0        0            0
+    #> 5   1        0        0        0        0        1        0            0
+    #> 6   1        0        0        0        0        0        1            0
+    #>   N_0064_total N_0092_total N_0093_total N_0123_total N_0169_total
+    #> 1            0            0            0            0            0
+    #> 2            0            0            0            0            0
+    #> 3            0            0            0            0            0
+    #> 4            0            0            0            0            0
+    #> 5            0            0            0            0            0
+    #> 6            0            0            0            0            0
+    #>   N_0230.17_total N_0233_total N_0275_total N_0288_total N_0342_total
+    #> 1               0            0            0            0            0
+    #> 2               0            0            0            0            0
+    #> 3               0            0            0            0            0
+    #> 4               0            0            0            0            0
+    #> 5               0            0            0            0            0
+    #> 6               0            0            0            0            0
+    #>   N_0372_total
+    #> 1            0
+    #> 2            0
+    #> 3            0
+    #> 4            0
+    #> 5            0
+    #> 6            0
 
-Reading the formula matters more than the code. `~ donor + cluster`
-says: fit a baseline for each donor, then estimate the cell type effect
-on top of that. Any gene that simply differs between people is absorbed
-by the donor terms and does not contaminate the cell type comparison.
+Read the formula rather than the code. `~ cluster + donor` fits a
+baseline for each donor and estimates the cluster effects on top of
+that. A gene that simply differs between people is absorbed by the donor
+terms, and does not contaminate the comparison between cell types. That
+is what a cell-level test cannot do.
 
-## Estimating dispersion
+## Dispersion
 
 ``` r
 y <- estimateDisp(y, design, robust = TRUE)
@@ -623,11 +585,8 @@ plotBCV(y)
 
 ![](figs/05_pseudobulk-dispersion-1.png)
 
-The biological coefficient of variation is the square root of the
-dispersion — roughly, the typical relative variability of a gene between
-replicates. For pseudobulk data this is usually higher than for bulk
-RNA-seq, because you are also absorbing variation in how many cells
-contributed to each profile.
+The biological coefficient of variation is roughly the typical relative
+variability of a gene between replicates.
 
 ``` r
 fit <- glmQLFit(y, design, robust = TRUE)
@@ -636,148 +595,164 @@ plotQLDisp(fit)
 
 ![](figs/05_pseudobulk-qlfit-1.png)
 
-## Testing
+## Marker genes for each cluster
+
+To find markers, we compare each cluster against the average of all the
+others. That comparison has to be written as a contrast.
 
 ``` r
-# Confirm what we are actually testing before testing it.
-grep("beta", colnames(design), value = TRUE)
+ncls <- nlevels(cluster)
+contr <- rbind(matrix(1 / (1 - ncls), ncls, ncls),
+               matrix(0, ncol(design) - ncls, ncls))
+diag(contr) <- 1
+contr[1, ] <- 0
+rownames(contr) <- colnames(design)
+colnames(contr) <- paste0("cluster", levels(cluster))
+contr
 ```
 
-    #> [1] "beta"
+    #>                   cluster0   cluster1   cluster2   cluster3   cluster4
+    #> Int              0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> cluster1        -0.1666667  1.0000000 -0.1666667 -0.1666667 -0.1666667
+    #> cluster2        -0.1666667 -0.1666667  1.0000000 -0.1666667 -0.1666667
+    #> cluster3        -0.1666667 -0.1666667 -0.1666667  1.0000000 -0.1666667
+    #> cluster4        -0.1666667 -0.1666667 -0.1666667 -0.1666667  1.0000000
+    #> cluster5        -0.1666667 -0.1666667 -0.1666667 -0.1666667 -0.1666667
+    #> cluster6        -0.1666667 -0.1666667 -0.1666667 -0.1666667 -0.1666667
+    #> N_0021_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0064_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0092_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0093_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0123_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0169_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0230.17_total  0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0233_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0275_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0288_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0342_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #> N_0372_total     0.0000000  0.0000000  0.0000000  0.0000000  0.0000000
+    #>                   cluster5   cluster6
+    #> Int              0.0000000  0.0000000
+    #> cluster1        -0.1666667 -0.1666667
+    #> cluster2        -0.1666667 -0.1666667
+    #> cluster3        -0.1666667 -0.1666667
+    #> cluster4        -0.1666667 -0.1666667
+    #> cluster5         1.0000000 -0.1666667
+    #> cluster6        -0.1666667  1.0000000
+    #> N_0021_total     0.0000000  0.0000000
+    #> N_0064_total     0.0000000  0.0000000
+    #> N_0092_total     0.0000000  0.0000000
+    #> N_0093_total     0.0000000  0.0000000
+    #> N_0123_total     0.0000000  0.0000000
+    #> N_0169_total     0.0000000  0.0000000
+    #> N_0230.17_total  0.0000000  0.0000000
+    #> N_0233_total     0.0000000  0.0000000
+    #> N_0275_total     0.0000000  0.0000000
+    #> N_0288_total     0.0000000  0.0000000
+    #> N_0342_total     0.0000000  0.0000000
+    #> N_0372_total     0.0000000  0.0000000
+
+Each column is one test. The `1` on the diagonal picks out one cluster;
+the negative fractions average over the rest; the donor rows are zero
+because donor is a nuisance we have adjusted for, not something we are
+testing.
 
 ``` r
-res <- glmQLFTest(fit, coef = "beta")
-topTags(res, n = 15)
+qlf <- list()
+for (i in 1:ncls) {
+  qlf[[i]] <- glmQLFTest(fit, contrast = contr[, i])
+  qlf[[i]]$comparison <- paste0("cluster", levels(cluster)[i], "_vs_others")
+}
+
+topTags(qlf[[1]], n = 10L)
 ```
 
-    #> Coefficient:  beta 
-    #>            gene     logFC   logCPM         F       PValue          FDR
-    #> MYO10     MYO10 -4.569643 6.247776 162.72115 6.457185e-21 9.724078e-17
-    #> GATA6     GATA6 -5.560000 4.264790 144.45339 1.170800e-20 9.724078e-17
-    #> SAMD11   SAMD11  5.443287 3.996606 125.77866 2.299349e-19 1.189313e-15
-    #> C5orf38 C5orf38 -6.136005 2.733504 118.77894 2.863917e-19 1.189313e-15
-    #> LDHA       LDHA -3.251139 8.802461 130.61912 2.513611e-18 8.350718e-15
-    #> PLCH2     PLCH2  6.550818 2.229215 127.99666 3.115218e-18 8.624482e-15
-    #> MAFA       MAFA  6.200288 5.570595 112.90500 4.628035e-18 1.098233e-14
-    #> C1orf21 C1orf21 -6.238601 4.447675 105.28300 1.605776e-17 3.293462e-14
-    #> MRC1       MRC1 -5.490764 3.332294 121.48728 1.784430e-17 3.293462e-14
-    #> FXYD5     FXYD5 -4.177392 7.325588 116.09942 2.270369e-17 3.771310e-14
-    #> VIM         VIM -4.939261 9.325464 118.40400 3.116708e-17 4.706513e-14
-    #> FABP5     FABP5 -4.523543 7.494737 115.33564 4.985660e-17 6.901400e-14
-    #> CHST8     CHST8  5.529320 2.644432 105.53685 1.155152e-16 1.476017e-13
-    #> POPDC3   POPDC3 -5.913294 3.289035  98.84565 1.793755e-16 2.128290e-13
-    #> IRX1       IRX1 -6.002333 1.940006 100.38312 6.187725e-16 6.852286e-13
-
-The table is sorted by p-value, so the top of it is whatever is most
-confidently different — which need not be the genes you expect. Check
-the positive control explicitly instead of hoping it appears:
+    #> Coefficient:  cluster0_vs_others 
+    #>              gene    logFC   logCPM        F       PValue          FDR
+    #> FBLN1       FBLN1 6.008470 6.782442 734.3620 7.191008e-39 5.657166e-35
+    #> OGN           OGN 5.736805 5.839392 585.7090 5.665084e-36 2.228361e-32
+    #> IGFBP6     IGFBP6 5.368960 6.786631 533.6868 3.254033e-34 8.533160e-31
+    #> DPT           DPT 5.926321 6.312554 459.0401 1.832983e-33 3.605019e-30
+    #> CFD           CFD 4.985577 8.900624 538.4030 1.870009e-32 2.942272e-29
+    #> SERPINF1 SERPINF1 5.168391 6.919634 580.0074 3.105335e-32 4.071612e-29
+    #> MFAP4       MFAP4 4.614728 5.947151 436.7289 5.145854e-32 5.783205e-29
+    #> CRABP2     CRABP2 3.952278 6.351154 434.5896 6.609001e-32 6.499126e-29
+    #> MMP2         MMP2 5.389541 6.789111 460.2753 1.104150e-31 9.651496e-29
+    #> CLMP         CLMP 5.959429 7.510977 484.8619 1.263357e-31 9.938829e-29
 
 ``` r
-all_res <- topTags(res, n = Inf)$table
-all_res[c("INS", "GCG"), c("logFC", "PValue", "FDR")]
+dt <- lapply(lapply(qlf, decideTests), summary)
+do.call("cbind", dt)
 ```
 
-    #>         logFC       PValue          FDR
-    #> INS  6.475571 3.850006e-08 2.036702e-06
-    #> GCG -6.688775 1.044031e-06 3.546504e-05
+    #>        cluster0_vs_others cluster1_vs_others cluster2_vs_others
+    #> Down                 1462                780               1453
+    #> NotSig               4004               4867               4283
+    #> Up                   2401               2220               2131
+    #>        cluster3_vs_others cluster4_vs_others cluster5_vs_others
+    #> Down                 1597               1617                253
+    #> NotSig               4407               4929               6559
+    #> Up                   1863               1321               1055
+    #>        cluster6_vs_others
+    #> Down                 1424
+    #> NotSig               4863
+    #> Up                   1580
 
-`INS` (insulin) should be strongly positive: up in beta cells. `GCG`
-(glucagon) should be strongly negative: it marks alpha cells, our
-reference. If those two come out the wrong way round, the contrast is
-inverted and everything downstream is backwards — which is exactly the
-kind of error that produces a publishable-looking gene list pointing in
-the wrong direction.
+That table is worth comparing against the edgeR guide. If your counts of
+up- and down-regulated genes per cluster are close to theirs, the
+analysis is working as intended.
+
+## Heatmap of top markers
 
 ``` r
-summary(decideTests(res))
+top <- 20
+topMarkers <- list()
+for (i in 1:ncls) {
+  ord <- order(qlf[[i]]$table$PValue, decreasing = FALSE)
+  up  <- qlf[[i]]$table$logFC > 0
+  topMarkers[[i]] <- rownames(y)[ord[up][1:top]]
+}
+topMarkers <- unique(unlist(topMarkers))
+
+lcpm  <- cpm(y, log = TRUE)
+annot <- data.frame(cluster = paste0("cluster ", cluster))
+rownames(annot) <- colnames(y)
+
+pheatmap(lcpm[topMarkers, ],
+         breaks = seq(-2, 2, length.out = 101),
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         scale = "row",
+         cluster_cols = TRUE, border_color = NA,
+         fontsize_row = 5,
+         treeheight_row = 70, treeheight_col = 70,
+         cutree_cols = ncls,
+         clustering_method = "ward.D2",
+         show_colnames = FALSE,
+         annotation_col = annot)
 ```
 
-    #>         beta
-    #> Down    1329
-    #> NotSig 14612
-    #> Up       670
+![](figs/05_pseudobulk-heatmap-1.png)
 
-``` r
-plotMD(res, main = "Beta vs alpha")
-abline(h = c(-1, 1), col = "blue", lty = 2)
-```
+Each column is a pseudobulk sample and each row a marker gene. If the
+markers are doing their job, samples from the same cluster sit together
+regardless of which donor they came from, and each cluster has its own
+block of highly expressed genes.
 
-![](figs/05_pseudobulk-md-plot-1.png)
+## A note on conditions
 
-Points above the line are up in beta, below are down in alpha. The blue
-lines mark two-fold change.
-
-## Comparing against the cell-level test
-
-This is the claim the whole tutorial rests on, so it is worth measuring
-rather than asserting.
-
-Making the comparison fair takes care. `FindMarkers()` filters genes
-before testing — by default it skips anything below `logfc.threshold` or
-expressed in too few cells — so out of the box it tests a much smaller
-set of genes than edgeR does. Turn those filters off, or you are
-comparing two different gene universes and the counts mean nothing.
-
-``` r
-alpha_beta <- subset(panc8, celltype %in% c("alpha", "beta"))
-Idents(alpha_beta) <- alpha_beta$celltype
-
-cell_level <- FindMarkers(
-  alpha_beta, ident.1 = "beta", ident.2 = "alpha",
-  logfc.threshold = 0,   # default 0.1 -- drops genes before testing
-  min.pct = 0            # default 0.01 -- same
-)
-
-data.frame(
-  test = c("pseudobulk (edgeR)", "cell-level (Seurat)"),
-  genes_tested = c(nrow(y), nrow(cell_level)),
-  n_significant = c(
-    sum(decideTests(res) != 0),
-    sum(cell_level$p_val_adj < 0.05)
-  )
-)
-```
-
-    #>                  test genes_tested n_significant
-    #> 1  pseudobulk (edgeR)        16611          1999
-    #> 2 cell-level (Seurat)        27882          4935
-
-Look at the two columns together, not just the second. The counts only
-mean something relative to how many genes each test considered.
-
-The cell-level test calls a higher proportion of what it tested — and
-note that it also tested more genes, because edgeR’s `filterByExpr()`
-had already removed those too sparsely expressed to be informative,
-while `FindMarkers()` with the filters off keeps everything.
-
-The gap here is real but not dramatic, and that is worth being honest
-about. Alpha and beta cells are genuinely very different, so both tests
-find a lot, and neither answer is absurd.
-
-The gap matters much more in the case this method exists for: comparing
-two *conditions* — treated versus untreated, say, with three donors
-each. There the cell-level test will hand you thousands of genes while
-you have six biological replicates, and its p-values will be reporting
-how many cells you sequenced rather than how many people you studied.
-Sequence twice as many cells from the same three donors and the p-values
-shrink, though you have learned nothing new about the biology.
-
-That is the asymmetry to remember. Comparing two obviously different
-cell types, the choice of test changes the length of your list.
-Comparing two conditions across a handful of donors, it changes whether
-your result is real.
-
-The practical rule: cell-level tests to characterize and name clusters,
-pseudobulk to compare groups you intend to make claims about.
+This tutorial compares cell types. The same machinery is what you would
+use to compare *conditions* — treated versus untreated, disease versus
+healthy — and that is where pseudobulk matters most. Comparing two
+obviously different cell types, the choice between a cell-level test and
+a pseudobulk test mostly changes the length of your gene list. Comparing
+two conditions with a handful of donors each, it changes whether your
+result is real.
 
 ## Save your work
 
 ``` r
 saveRDS(y,   file = file.path(WORK, "output", "pseudobulk_dgelist.rds"))
-saveRDS(res, file = file.path(WORK, "output", "pseudobulk_results.rds"))
-
-write.csv(topTags(res, n = Inf)$table,
-          file = file.path(WORK, "output", "beta_vs_alpha.csv"))
+saveRDS(qlf, file = file.path(WORK, "output", "pseudobulk_markers.rds"))
 ```
 
 ## Session information
@@ -807,9 +782,8 @@ sessionInfo()
     #> [1] stats     graphics  grDevices utils     datasets  methods   base     
     #> 
     #> other attached packages:
-    #> [1] dplyr_1.2.1           ggplot2_4.0.3         edgeR_4.10.4         
-    #> [4] limma_3.68.5          SeuratData_0.2.2.9002 Seurat_5.5.1         
-    #> [7] SeuratObject_5.4.0    sp_2.2-3             
+    #> [1] pheatmap_1.0.13    ggplot2_4.0.3      edgeR_4.10.5       limma_3.68.5      
+    #> [5] Seurat_5.5.1       SeuratObject_5.4.0 sp_2.2-3          
     #> 
     #> loaded via a namespace (and not attached):
     #>   [1] deldir_2.0-4           pbapply_1.7-4          gridExtra_2.3.1       
@@ -817,7 +791,7 @@ sessionInfo()
     #>   [7] otel_0.2.0             spatstat.geom_3.8-2    matrixStats_1.5.0     
     #>  [10] ggridges_0.5.7         compiler_4.6.1         png_0.1-9             
     #>  [13] vctrs_0.7.3            reshape2_1.4.5         stringr_1.6.0         
-    #>  [16] crayon_1.5.3           pkgconfig_2.0.3        fastmap_1.2.0         
+    #>  [16] pkgconfig_2.0.3        fastmap_1.2.0          labeling_0.4.3        
     #>  [19] promises_1.5.0         rmarkdown_2.31         purrr_1.2.2           
     #>  [22] xfun_0.60              jsonlite_2.0.0         goftest_1.2-3         
     #>  [25] later_1.4.8            spatstat.utils_3.2-4   irlba_2.3.7           
@@ -837,23 +811,22 @@ sessionInfo()
     #>  [67] Rtsne_0.17             future_1.75.0          fastDummies_1.7.6     
     #>  [70] survival_3.8-9         polyclip_1.10-7        fitdistrplus_1.2-6    
     #>  [73] pillar_1.11.1          KernSmooth_2.23-26     plotly_4.12.1         
-    #>  [76] generics_0.1.4         RcppHNSW_0.7.0         panc8.SeuratData_3.0.2
-    #>  [79] scales_1.4.0           globals_0.19.1         xtable_1.8-8          
-    #>  [82] glue_1.8.1             tools_4.6.1            data.table_1.18.4     
-    #>  [85] RSpectra_0.16-2        locfit_1.5-9.12        RANN_2.6.2            
-    #>  [88] dotCall64_1.2          cowplot_1.2.0          grid_4.6.1            
-    #>  [91] tidyr_1.3.2            nlme_3.1-170           patchwork_1.3.2       
-    #>  [94] presto_1.1.0           cli_3.6.6              rappdirs_0.3.4        
-    #>  [97] spatstat.sparse_3.2-0  spam_2.11-4            viridisLite_0.4.3     
-    #> [100] uwot_0.2.4             gtable_0.3.6           digest_0.6.39         
-    #> [103] progressr_1.0.0        ggrepel_0.9.8          htmlwidgets_1.6.4     
-    #> [106] farver_2.1.2           htmltools_0.5.9        lifecycle_1.0.5       
-    #> [109] httr_1.4.8             statmod_1.5.2          mime_0.13             
-    #> [112] MASS_7.3-66
+    #>  [76] generics_0.1.4         RcppHNSW_0.7.0         scales_1.4.0          
+    #>  [79] globals_0.19.1         xtable_1.8-8           glue_1.8.1            
+    #>  [82] tools_4.6.1            data.table_1.18.4      RSpectra_0.16-2       
+    #>  [85] locfit_1.5-9.12        RANN_2.6.2             dotCall64_1.2         
+    #>  [88] cowplot_1.2.0          grid_4.6.1             tidyr_1.3.2           
+    #>  [91] nlme_3.1-170           patchwork_1.3.2        cli_3.6.6             
+    #>  [94] spatstat.sparse_3.2-0  spam_2.11-4            viridisLite_0.4.3     
+    #>  [97] dplyr_1.2.1            uwot_0.2.4             gtable_0.3.6          
+    #> [100] digest_0.6.39          progressr_1.0.0        ggrepel_0.9.8         
+    #> [103] htmlwidgets_1.6.4      farver_2.1.2           htmltools_0.5.9       
+    #> [106] lifecycle_1.0.5        httr_1.4.8             statmod_1.5.2         
+    #> [109] mime_0.13              MASS_7.3-66
 
 ------------------------------------------------------------------------
 
 *Adapted from section 4.10 of the [edgeR User’s
 Guide](https://bioconductor.org/packages/release/bioc/html/edgeR.html),
-updated for current edgeR (`normLibSizes`, native `Seurat2PB`) and
-Seurat 5.*
+using the same data, updated for current edgeR (`normLibSizes`, native
+`Seurat2PB`) and Seurat 5.*

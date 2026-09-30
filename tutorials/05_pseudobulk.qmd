@@ -14,11 +14,12 @@ execute:
 knitr:
   opts_chunk:
     fig.path: "figs/05_pseudobulk-"
+    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/05_pseudobulk/"
     comment: "#>"
 ---
 
 By now you have found marker genes with `FindAllMarkers()`, which tests every
-cell against every other cell. That works for identifying cell types, and it is
+cell against every other cell. That works for identifying cell types, but it is
 the wrong tool for asking whether a gene differs between *conditions*.
 
 The reason is that cells from the same donor are not independent observations.
@@ -36,16 +37,32 @@ then analyze those profiles with the same tools people have used for bulk
 RNA-seq for fifteen years, which are well-tested and which treat samples as the
 unit of replication — because they are.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **16 GB of memory** and runs in **15–20 minutes**.
+We rendered this tutorial with:
 
 ```bash
-interactive -a cusanovichlab -n 8 -t 02:00:00
+interactive -a cusanovichlab -n 4 -t 02:00:00
 ```
 
-The `interactive` command takes `-m` as memory **per core**, so `-n 8` with the
-default 4 GB per core gives you 32 GB in total. There is no `--mem` flag.
+`interactive` allocates memory per core — 4 GB each by default — so that is **16
+GB** in total. Note there is no `--mem` flag: memory comes from the number of
+cores you ask for. Pseudobulk profiles are small: the heavy lifting collapses
+ten thousand cells into a few dozen columns.
+
+It took about **2 minutes** to run when we did it. Ask for more time than you
+expect to need — a job that hits its limit is killed part way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no error
+message — the session simply stops mid-command. If that ever happens to you,
+here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -53,124 +70,162 @@ default 4 GB per core gives you 32 GB in total. There is no `--mem` flag.
 #| label: setup
 #| cache: false
 library(Seurat)
-library(SeuratData)
 library(edgeR)
 library(ggplot2)
-library(dplyr)
+library(pheatmap)
 
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
-
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "pseudobulk")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
 
-SHARED_DATA <- "/groups/darrenc/cmm_523/references/Rdatalib"
-MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
-dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
-.libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
-
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "05_pseudobulk/"
-  )
-)
+SHARED <- "/groups/darrenc/cmm_523/references/edgeR_pal"
 
 WORK
 ```
 
 ## The data
 
-We will reuse the pancreas dataset from the [integration
-tutorial](03_integration.md). It is well suited to this: eight donors, five
-technologies, and published cell type labels. Donor is our unit of replication.
+We will use the same dataset as the pseudobulk case study in the edgeR User's
+Guide (section 4.10), so you can compare your results directly against theirs —
+a useful check that nothing has gone wrong.
+
+The data come from a single-cell atlas of human breast tissue (Pal et al. 2021,
+*EMBO Journal*). This subset contains normal breast epithelium from 13 donors,
+already clustered by the original authors, and trimmed to 2,000 genes to keep it
+small.
 
 ```{r}
 #| label: data
-if (!requireNamespace("panc8.SeuratData", quietly = TRUE)) {
-  InstallData("panc8")
-}
-data("panc8", package = "panc8.SeuratData")
-panc8 <- UpdateSeuratObject(panc8)
+seu_file <- file.path(SHARED, "SeuratObj.rds")
 
-table(panc8$dataset, panc8$celltype)[, 1:6]
+if (!file.exists(seu_file)) {
+  seu_file <- file.path(WORK, "SeuratObj.rds")
+  if (!file.exists(seu_file)) {
+    download.file("https://bioinf.wehi.edu.au/edgeR/UserGuideData/SeuratObj.rds",
+                  seu_file, mode = "wb")
+  }
+}
+
+raw <- readRDS(seu_file)
+
+# This object was saved years ago, and it was subset to 2,000 genes without its
+# gene-level metadata being updated to match. So it carries a meta.features
+# table describing the full gene set, and a var.features list naming genes that
+# are no longer in it. Seurat does not complain on load, but the first operation
+# that revalidates the assay fails with "'meta.features' must have the same
+# number of rows as 'data'".
+#
+# Rather than patch that, rebuild a clean object from the counts and the cell
+# metadata, which is all we actually need. This is a useful move to know: when
+# an object you were given misbehaves, you can usually extract the parts that
+# matter and start again.
+# Note `layer`, not `slot`. The `slot` argument is defunct in SeuratObject 5 --
+# not merely deprecated, so it errors rather than warns. Older code and
+# tutorials you find will use `slot`; this is the Seurat 5 spelling.
+counts <- SeuratObject::GetAssayData(raw, assay = "RNA", layer = "counts")
+meta   <- raw@meta.data
+
+seu <- CreateSeuratObject(counts = counts, meta.data = meta)
+seu
 ```
 
-Look at that table before going further, because it determines what questions
-you can ask. Each row is a donor, each column a cell type, and the numbers are
-cell counts. Zeros and single digits are cell types that donor barely
-contributed — those will produce pseudobulk profiles you should not trust, and
-we filter them out below.
+```{r}
+#| label: inspect
+head(seu@meta.data)
+table(seu$group)
+table(seu$seurat_clusters)
+```
+
+`group` identifies the donor each cell came from, and `seurat_clusters` holds the
+cell clusters from the original analysis. Those are the two things pseudobulk
+needs: a unit of replication and the groups you want to compare.
+
+## A first look at the cells
+
+The edgeR guide shows these clusters on a t-SNE plot. We will use UMAP, which you
+have already seen.
+
+```{r}
+#| label: umap
+seu <- NormalizeData(seu)
+seu <- FindVariableFeatures(seu)
+seu <- ScaleData(seu)
+seu <- RunPCA(seu)
+seu <- RunUMAP(seu, dims = 1:20)
+
+DimPlot(seu, reduction = "umap", group.by = "seurat_clusters", label = TRUE) +
+  NoLegend()
+```
+
+The clusters come from the original authors, not from us. Our UMAP is a fresh
+embedding of the same cells, so it will not look identical to their t-SNE — but
+the same cluster labels should still group together.
+
+```{r}
+#| label: umap-donor
+DimPlot(seu, reduction = "umap", group.by = "group") +
+  ggtitle("Cells coloured by donor")
+```
+
+Compare the two plots. If cells separated by donor rather than by cluster, that
+would be a warning that donor differences were as large as cell type differences.
+Here the donors are mixed within each cluster, which is what you want to see.
 
 ## Building pseudobulk profiles
 
-edgeR provides `Seurat2PB()`, which does the aggregation for you. You tell it
-which metadata column identifies the sample and which identifies the cluster.
+edgeR provides `Seurat2PB()`, which sums the counts for every combination of
+sample and cluster.
 
 ```{r}
 #| label: pseudobulk
-y <- Seurat2PB(panc8, sample = "dataset", cluster = "celltype")
+y <- Seurat2PB(seu, sample = "group", cluster = "seurat_clusters")
+
+# Seurat2PB copies whatever gene-level metadata the Seurat object was carrying
+# into y$genes, and edgeR prints that alongside its results. Our object picked
+# up columns from FindVariableFeatures() when we made the UMAP above, which
+# would push logFC and the p-values off the right-hand edge of every results
+# table. Keep just the gene names.
+y$genes <- data.frame(gene = rownames(y), row.names = rownames(y))
 
 y
+head(y$samples)
 ```
 
-What came back is a `DGEList` — edgeR's bulk RNA-seq container. Columns are now
-sample-by-celltype combinations rather than cells. The object went from ~15,000
-columns to a few dozen, which is the whole point.
-
-```{r}
-#| label: inspect-pb
-head(y$samples, 10)
-dim(y)
-```
+What came back is a `DGEList` — edgeR's container for bulk RNA-seq. Columns are
+now donor-by-cluster combinations rather than cells: about ten thousand columns
+became fewer than a hundred.
 
 ## Filtering
 
-Two filters matter here, and they do different jobs.
-
-First, drop pseudobulk profiles that are too thin to be worth anything. A
-profile aggregated from four cells is noise dressed up as data.
-
-`Seurat2PB()` does not report how many cells went into each profile, so we use
-library size as the stand-in: a profile built from very few cells has very few
-total counts. There is no universal threshold. Look at the distribution and
-pick somewhere sensible for your data rather than copying a number.
+First, drop pseudobulk profiles that are too thin to be worth anything. A profile
+summed from a handful of cells is mostly noise. `Seurat2PB()` does not report how
+many cells went into each profile, so library size is the stand-in.
 
 ```{r}
-#| label: lib-sizes
+#| label: filter-samples
 summary(y$samples$lib.size)
-hist(log10(y$samples$lib.size), breaks = 20,
-     xlab = "log10(library size)", main = "Pseudobulk profile depth")
-```
 
-```{r}
-#| label: filter-cells
-MIN_LIB <- 5e4
-
-keep.samples <- y$samples$lib.size >= MIN_LIB
+keep.samples <- y$samples$lib.size > 5e4
 table(keep.samples)
 
-# Fail loudly rather than silently returning an empty object. A filter that
-# removes everything is a mistake, not a result, and an empty DGEList produces
-# confusing errors several steps later rather than here.
+# Fail loudly rather than silently emptying the object.
 stopifnot(sum(keep.samples) >= 3)
 
 y <- y[, keep.samples]
-dim(y)
 ```
 
-Second, drop genes that are not expressed at a useful level. `filterByExpr()`
-does this using the design of the experiment rather than a flat cutoff, which
-is why you pass it the group structure.
+Then drop genes not expressed at a useful level. `filterByExpr()` takes the group
+structure into account rather than applying a flat cutoff.
 
 ```{r}
 #| label: filter-genes
-keep.genes <- filterByExpr(y, group = y$samples$cluster)
+keep.genes <- filterByExpr(y, group = y$samples$cluster,
+                           min.count = 10, min.total.count = 20)
 table(keep.genes)
 
-y <- y[keep.genes, , keep.lib.sizes = FALSE]
+y <- y[keep.genes, , keep = FALSE]
 dim(y)
 ```
 
@@ -179,66 +234,50 @@ dim(y)
 ```{r}
 #| label: normalize
 y <- normLibSizes(y)
-head(y$samples)
+summary(y$samples$norm.factors)
 ```
 
-`normLibSizes()` computes TMM normalization factors, correcting for the fact
-that a handful of very highly expressed genes can otherwise make everything
-else look depleted. If you find older code calling `calcNormFactors()`, that is
-the previous name for this function — it still works, but `normLibSizes()` is
-the current one.
+`normLibSizes()` computes TMM normalization factors, correcting for the fact that
+a handful of very highly expressed genes can otherwise make everything else look
+depleted. You may see older code call this `calcNormFactors()` — same thing,
+previous name.
 
 ## Looking at the structure
 
-Before testing anything, look at how the samples relate to each other. An MDS
-plot is the bulk RNA-seq equivalent of a UMAP, and it will tell you immediately
-whether cell type or donor is the dominant source of variation.
+`plotMDS()` gives a view of the data analogous to UMAP, where the distance
+between each pair of points characterizes the similarity of those pseudobulk
+samples. We expect to see clustering of samples from the same cell type dominate
+over clustering of samples from the same subject.
 
 ```{r}
 #| label: mds
 #| fig-height: 7
-cluster <- factor(y$samples$cluster)
-plotMDS(y, col = as.numeric(cluster), pch = 16)
-legend("topright", legend = levels(cluster),
-       col = seq_along(levels(cluster)), pch = 16, cex = 0.7)
+cluster <- as.factor(y$samples$cluster)
+plotMDS(y, pch = 16, col = c(2:8)[cluster], main = "MDS")
+legend("bottomright", legend = paste0("cluster ", levels(cluster)),
+       pch = 16, col = 2:8, cex = 0.8)
 ```
 
-You want to see profiles grouping by cell type rather than by donor. If donors
-separated instead, that would be a warning: the differences between people
-would be larger than the differences between cell types, and any comparison you
-made would be confounded.
+## The design
 
-## Setting up the test
-
-We will ask which genes distinguish alpha cells from beta cells, while
-accounting for donor. That "while accounting for donor" is the reason to do any
-of this — it is what a cell-level test cannot do.
+We want to find genes that distinguish each cluster from the others, while
+accounting for differences between donors.
 
 ```{r}
 #| label: design
-donor   <- factor(y$samples$sample)
-cluster <- factor(y$samples$cluster)
-
-# Put alpha first so it becomes the reference level. Without this, R picks the
-# alphabetically first cell type (acinar), and every "cluster" coefficient
-# would be a comparison against acinar rather than against alpha. That is a
-# perfectly valid analysis -- it is just not the one we said we were doing,
-# and nothing in the output would tell you.
-cluster <- relevel(cluster, ref = "alpha")
-
-design <- model.matrix(~ donor + cluster)
-colnames(design) <- gsub("cluster", "", colnames(design))
+donor <- factor(y$samples$sample)
+design <- model.matrix(~ cluster + donor)
 colnames(design) <- gsub("donor", "", colnames(design))
-
-dim(design)
+colnames(design)[1] <- "Int"
+head(design)
 ```
 
-Reading the formula matters more than the code. `~ donor + cluster` says: fit a
-baseline for each donor, then estimate the cell type effect on top of that. Any
-gene that simply differs between people is absorbed by the donor terms and does
-not contaminate the cell type comparison.
+Read the formula rather than the code. `~ cluster + donor` fits a baseline for
+each donor and estimates the cluster effects on top of that. A gene that simply
+differs between people is absorbed by the donor terms, and does not contaminate
+the comparison between cell types. That is what a cell-level test cannot do.
 
-## Estimating dispersion
+## Dispersion
 
 ```{r}
 #| label: dispersion
@@ -246,10 +285,8 @@ y <- estimateDisp(y, design, robust = TRUE)
 plotBCV(y)
 ```
 
-The biological coefficient of variation is the square root of the dispersion —
-roughly, the typical relative variability of a gene between replicates. For
-pseudobulk data this is usually higher than for bulk RNA-seq, because you are
-also absorbing variation in how many cells contributed to each profile.
+The biological coefficient of variation is roughly the typical relative
+variability of a gene between replicates.
 
 ```{r}
 #| label: qlfit
@@ -257,115 +294,99 @@ fit <- glmQLFit(y, design, robust = TRUE)
 plotQLDisp(fit)
 ```
 
-## Testing
+## Marker genes for each cluster
+
+To find markers, we compare each cluster against the average of all the others.
+That comparison has to be written as a contrast.
+
+```{r}
+#| label: contrasts
+ncls <- nlevels(cluster)
+contr <- rbind(matrix(1 / (1 - ncls), ncls, ncls),
+               matrix(0, ncol(design) - ncls, ncls))
+diag(contr) <- 1
+contr[1, ] <- 0
+rownames(contr) <- colnames(design)
+colnames(contr) <- paste0("cluster", levels(cluster))
+contr
+```
+
+Each column is one test. The `1` on the diagonal picks out one cluster; the
+negative fractions average over the rest; the donor rows are zero because donor
+is a nuisance we have adjusted for, not something we are testing.
 
 ```{r}
 #| label: test
-# Confirm what we are actually testing before testing it.
-grep("beta", colnames(design), value = TRUE)
+qlf <- list()
+for (i in 1:ncls) {
+  qlf[[i]] <- glmQLFTest(fit, contrast = contr[, i])
+  qlf[[i]]$comparison <- paste0("cluster", levels(cluster)[i], "_vs_others")
+}
 
-res <- glmQLFTest(fit, coef = "beta")
-topTags(res, n = 15)
+topTags(qlf[[1]], n = 10L)
 ```
-
-The table is sorted by p-value, so the top of it is whatever is most confidently
-different — which need not be the genes you expect. Check the positive control
-explicitly instead of hoping it appears:
-
-```{r}
-#| label: positive-control
-all_res <- topTags(res, n = Inf)$table
-all_res[c("INS", "GCG"), c("logFC", "PValue", "FDR")]
-```
-
-`INS` (insulin) should be strongly positive: up in beta cells. `GCG` (glucagon)
-should be strongly negative: it marks alpha cells, our reference. If those two
-come out the wrong way round, the contrast is inverted and everything
-downstream is backwards — which is exactly the kind of error that produces a
-publishable-looking gene list pointing in the wrong direction.
 
 ```{r}
 #| label: summary
-summary(decideTests(res))
+dt <- lapply(lapply(qlf, decideTests), summary)
+do.call("cbind", dt)
 ```
+
+That table is worth comparing against the edgeR guide. If your counts of up- and
+down-regulated genes per cluster are close to theirs, the analysis is working as
+intended.
+
+## Heatmap of top markers
 
 ```{r}
-#| label: md-plot
-plotMD(res, main = "Beta vs alpha")
-abline(h = c(-1, 1), col = "blue", lty = 2)
+#| label: heatmap
+#| fig-height: 10
+top <- 20
+topMarkers <- list()
+for (i in 1:ncls) {
+  ord <- order(qlf[[i]]$table$PValue, decreasing = FALSE)
+  up  <- qlf[[i]]$table$logFC > 0
+  topMarkers[[i]] <- rownames(y)[ord[up][1:top]]
+}
+topMarkers <- unique(unlist(topMarkers))
+
+lcpm  <- cpm(y, log = TRUE)
+annot <- data.frame(cluster = paste0("cluster ", cluster))
+rownames(annot) <- colnames(y)
+
+pheatmap(lcpm[topMarkers, ],
+         breaks = seq(-2, 2, length.out = 101),
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         scale = "row",
+         cluster_cols = TRUE, border_color = NA,
+         fontsize_row = 5,
+         treeheight_row = 70, treeheight_col = 70,
+         cutree_cols = ncls,
+         clustering_method = "ward.D2",
+         show_colnames = FALSE,
+         annotation_col = annot)
 ```
 
-Points above the line are up in beta, below are down in alpha. The blue lines
-mark two-fold change.
+Each column is a pseudobulk sample and each row a marker gene. If the markers
+are doing their job, samples from the same cluster sit together regardless of
+which donor they came from, and each cluster has its own block of highly
+expressed genes.
 
-## Comparing against the cell-level test
+## A note on conditions
 
-This is the claim the whole tutorial rests on, so it is worth measuring rather
-than asserting.
-
-Making the comparison fair takes care. `FindMarkers()` filters genes before
-testing — by default it skips anything below `logfc.threshold` or expressed in
-too few cells — so out of the box it tests a much smaller set of genes than
-edgeR does. Turn those filters off, or you are comparing two different gene
-universes and the counts mean nothing.
-
-```{r}
-#| label: compare-celllevel
-alpha_beta <- subset(panc8, celltype %in% c("alpha", "beta"))
-Idents(alpha_beta) <- alpha_beta$celltype
-
-cell_level <- FindMarkers(
-  alpha_beta, ident.1 = "beta", ident.2 = "alpha",
-  logfc.threshold = 0,   # default 0.1 -- drops genes before testing
-  min.pct = 0            # default 0.01 -- same
-)
-
-data.frame(
-  test = c("pseudobulk (edgeR)", "cell-level (Seurat)"),
-  genes_tested = c(nrow(y), nrow(cell_level)),
-  n_significant = c(
-    sum(decideTests(res) != 0),
-    sum(cell_level$p_val_adj < 0.05)
-  )
-)
-```
-
-Look at the two columns together, not just the second. The counts only mean
-something relative to how many genes each test considered.
-
-The cell-level test calls a higher proportion of what it tested — and note that
-it also tested more genes, because edgeR's `filterByExpr()` had already removed
-those too sparsely expressed to be informative, while `FindMarkers()` with the
-filters off keeps everything.
-
-The gap here is real but not dramatic, and that is worth being honest about.
-Alpha and beta cells are genuinely very different, so both tests find a lot, and
-neither answer is absurd.
-
-The gap matters much more in the case this method exists for: comparing two
-*conditions* — treated versus untreated, say, with three donors each. There the
-cell-level test will hand you thousands of genes while you have six biological
-replicates, and its p-values will be reporting how many cells you sequenced
-rather than how many people you studied. Sequence twice as many cells from the
-same three donors and the p-values shrink, though you have learned nothing new
-about the biology.
-
-That is the asymmetry to remember. Comparing two obviously different cell types,
-the choice of test changes the length of your list. Comparing two conditions
-across a handful of donors, it changes whether your result is real.
-
-The practical rule: cell-level tests to characterize and name clusters,
-pseudobulk to compare groups you intend to make claims about.
+This tutorial compares cell types. The same machinery is what you would use to
+compare *conditions* — treated versus untreated, disease versus healthy — and
+that is where pseudobulk matters most. Comparing two obviously different cell
+types, the choice between a cell-level test and a pseudobulk test mostly changes
+the length of your gene list. Comparing two conditions with a handful of donors
+each, it changes whether your result is real.
 
 ## Save your work
 
 ```{r}
 #| label: save
 saveRDS(y,   file = file.path(WORK, "output", "pseudobulk_dgelist.rds"))
-saveRDS(res, file = file.path(WORK, "output", "pseudobulk_results.rds"))
-
-write.csv(topTags(res, n = Inf)$table,
-          file = file.path(WORK, "output", "beta_vs_alpha.csv"))
+saveRDS(qlf, file = file.path(WORK, "output", "pseudobulk_markers.rds"))
 ```
 
 ## Session information
@@ -378,5 +399,6 @@ sessionInfo()
 ---
 
 *Adapted from section 4.10 of the [edgeR User's
-Guide](https://bioconductor.org/packages/release/bioc/html/edgeR.html), updated
-for current edgeR (`normLibSizes`, native `Seurat2PB`) and Seurat 5.*
+Guide](https://bioconductor.org/packages/release/bioc/html/edgeR.html), using the
+same data, updated for current edgeR (`normLibSizes`, native `Seurat2PB`) and
+Seurat 5.*

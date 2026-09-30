@@ -14,6 +14,7 @@ execute:
 knitr:
   opts_chunk:
     fig.path: "figs/01_seurat_intro-"
+    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/01_seurat_intro/"
     comment: "#>"
 ---
 
@@ -25,19 +26,31 @@ cell types on a UMAP.
 Everything here runs inside the course container. If you have not built it yet,
 go back to the in-class assignment before starting.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **8 GB of memory** and runs in **15–20 minutes**.
-Start an interactive session with:
+We rendered this tutorial with:
 
 ```bash
-interactive -a cusanovichlab -n 4 -t 02:00:00 --mem=16G
+interactive -a cusanovichlab -n 4 -t 02:00:00
 ```
 
-The default `interactive` gives you 1 CPU and 4 GB. When R runs out of memory on
-the cluster it is killed by the scheduler with no error message — the session
-simply stops mid-command. If that ever happens to you, here or anywhere else,
-memory is the first thing to check.
+`interactive` allocates memory per core — 4 GB each by default — so that is **16
+GB** in total. Note there is no `--mem` flag: memory comes from the number of
+cores you ask for. This is a small dataset, so that is plenty.
+
+It took about **2 minutes** to run when we did it. Ask for more time than you
+expect to need — a job that hits its limit is killed part way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no error
+message — the session simply stops mid-command. If that ever happens to you,
+here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -56,18 +69,10 @@ library(ggplot2)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "seurat_intro")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
 
-# Rendering only: keep the multi-GB knitr cache off /home.
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "01_seurat_intro/"
-  )
-)
 
 WORK
 ```
@@ -212,7 +217,7 @@ all.genes <- rownames(pbmc)
 pbmc <- ScaleData(pbmc, features = all.genes)
 ```
 
-## Linear dimensional reduction
+## Linear dimensionality reduction
 
 ```{r}
 #| label: pca
@@ -234,7 +239,7 @@ DimPlot(pbmc, reduction = "pca") + NoLegend()
 `DimHeatmap()` is a useful way to judge how many components carry real signal.
 Each panel shows the cells and genes with the most extreme loadings on that
 component, ordered. A component with clear block structure is capturing
-something; one that looks like noise probably is.
+something; one that looks like noise probably is not.
 
 ```{r}
 #| label: dimheatmap-1
@@ -247,8 +252,10 @@ DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
 DimHeatmap(pbmc, dims = 1:15, cells = 500, balanced = TRUE)
 ```
 
-The elbow plot ranks components by the variance they explain. The "elbow" — the
-point where the curve flattens — is a rough guide to how many to keep.
+For downstream analysis, we only want to use the most informative PCs. But how
+do we decide how many to use? People often use an "elbow plot." It ranks
+components by the variance they explain. The "elbow" — the point where the curve
+flattens — is a rough guide to how many to keep.
 
 ```{r}
 #| label: elbow

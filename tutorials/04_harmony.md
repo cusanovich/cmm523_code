@@ -26,14 +26,35 @@ is sometimes what you want and sometimes exactly what you don’t.
 This tutorial runs both on the same data so you can see the difference
 rather than take anyone’s word for it.
 
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **24 GB of memory** and runs in **30–40
-minutes**.
+We rendered this tutorial with:
 
 ``` bash
-interactive -a cusanovichlab -n 8 -t 03:00:00 --mem=32G
+interactive -a cusanovichlab -n 8 -t 03:00:00
 ```
+
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **32 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for. This one runs two integration methods
+on the same data.
+
+It took about **8 minutes** to run when we did it. Ask for more time
+than you expect to need — a job that hits its limit is killed part way
+through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
@@ -48,7 +69,6 @@ library(dplyr)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "harmony")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -63,18 +83,12 @@ MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
 dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
 
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "04_harmony/"
-  )
-)
 
 options(future.globals.maxSize = 8000 * 1024^2)
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/harmony"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/harmony"
 
 ## Data and baseline processing
 
@@ -270,7 +284,8 @@ panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "cca_clusters")
     #> Elapsed time: 2 seconds
 
 ``` r
-table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
+agreement <- table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
+agreement
 ```
 
     #>        cca
@@ -293,10 +308,32 @@ table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
     #>      15   65    0    0    0   14    0    0    0    0    0    0    0    1    0
     #>      16    1    0    0    0    0    0    0    0    0    1    0    0    0   44
 
-A near-diagonal table means the two methods found essentially the same
-structure. Off-diagonal mass means they disagree about which cells
-belong together — and those cells are worth looking at, because they are
-where the method choice actually changes your conclusions.
+The table is hard to read at a glance, so plot it. Scaling each row to
+sum to one shows, for each Harmony cluster, how its cells were split
+among the CCA clusters.
+
+``` r
+row_frac <- sweep(agreement, 1, rowSums(agreement), "/")
+pheatmap::pheatmap(
+  row_frac,
+  color = viridis::viridis(100),
+  cluster_rows = FALSE, cluster_cols = FALSE,
+  display_numbers = FALSE,
+  main = "Fraction of each Harmony cluster in each CCA cluster"
+)
+```
+
+![](figs/04_harmony-cluster-agreement-heatmap-1.png)
+
+If the two methods agree, each row has one bright square: every Harmony
+cluster maps onto a single CCA cluster. Do not expect those squares to
+fall on a diagonal. Each method numbers its clusters independently, so
+cluster 3 in one has no reason to be cluster 3 in the other.
+
+Rows where the colour is spread across several squares are where the
+methods disagree about which cells belong together — and those cells are
+worth looking at, because they are where the method choice actually
+changes your conclusions.
 
 ``` r
 panc8 <- JoinLayers(panc8)
@@ -378,26 +415,27 @@ sessionInfo()
     #>  [40] scattermore_1.2        knitr_1.51             tensor_1.5.1          
     #>  [43] future.apply_1.20.2    zoo_1.9-0              sctransform_0.4.3     
     #>  [46] httpuv_1.6.17          Matrix_1.7-6           splines_4.6.1         
-    #>  [49] igraph_2.3.3           tidyselect_1.2.1       dichromat_2.0-1       
-    #>  [52] abind_1.4-8            yaml_2.3.12            spatstat.random_3.5-1 
-    #>  [55] codetools_0.2-20       miniUI_0.1.2           spatstat.explore_3.8-2
-    #>  [58] listenv_1.0.0          lattice_0.22-9         tibble_3.3.1          
-    #>  [61] plyr_1.8.9             withr_3.0.3            shiny_1.14.0          
-    #>  [64] S7_0.2.2               ROCR_1.0-12            evaluate_1.0.5        
-    #>  [67] Rtsne_0.17             fastDummies_1.7.6      survival_3.8-9        
-    #>  [70] polyclip_1.10-7        fitdistrplus_1.2-6     pillar_1.11.1         
-    #>  [73] KernSmooth_2.23-26     plotly_4.12.1          generics_0.1.4        
-    #>  [76] RcppHNSW_0.7.0         panc8.SeuratData_3.0.2 scales_1.4.0          
-    #>  [79] globals_0.19.1         xtable_1.8-8           RhpcBLASctl_0.23-42   
-    #>  [82] glue_1.8.1             tools_4.6.1            data.table_1.18.4     
-    #>  [85] RSpectra_0.16-2        RANN_2.6.2             dotCall64_1.2         
-    #>  [88] cowplot_1.2.0          grid_4.6.1             tidyr_1.3.2           
-    #>  [91] nlme_3.1-170           cli_3.6.6              rappdirs_0.3.4        
-    #>  [94] spatstat.sparse_3.2-0  spam_2.11-4            viridisLite_0.4.3     
-    #>  [97] uwot_0.2.4             gtable_0.3.6           digest_0.6.39         
-    #> [100] progressr_1.0.0        ggrepel_0.9.8          htmlwidgets_1.6.4     
-    #> [103] farver_2.1.2           htmltools_0.5.9        lifecycle_1.0.5       
-    #> [106] httr_1.4.8             mime_0.13              MASS_7.3-66
+    #>  [49] igraph_2.3.3           tidyselect_1.2.1       viridis_0.6.5         
+    #>  [52] dichromat_2.0-1        abind_1.4-8            yaml_2.3.12           
+    #>  [55] spatstat.random_3.5-1  codetools_0.2-20       miniUI_0.1.2          
+    #>  [58] spatstat.explore_3.8-2 listenv_1.0.0          lattice_0.22-9        
+    #>  [61] tibble_3.3.1           plyr_1.8.9             withr_3.0.3           
+    #>  [64] shiny_1.14.0           S7_0.2.2               ROCR_1.0-12           
+    #>  [67] evaluate_1.0.5         Rtsne_0.17             fastDummies_1.7.6     
+    #>  [70] survival_3.8-9         polyclip_1.10-7        fitdistrplus_1.2-6    
+    #>  [73] pillar_1.11.1          KernSmooth_2.23-26     plotly_4.12.1         
+    #>  [76] generics_0.1.4         RcppHNSW_0.7.0         panc8.SeuratData_3.0.2
+    #>  [79] scales_1.4.0           globals_0.19.1         xtable_1.8-8          
+    #>  [82] RhpcBLASctl_0.23-42    glue_1.8.1             pheatmap_1.0.13       
+    #>  [85] tools_4.6.1            data.table_1.18.4      RSpectra_0.16-2       
+    #>  [88] RANN_2.6.2             dotCall64_1.2          cowplot_1.2.0         
+    #>  [91] grid_4.6.1             tidyr_1.3.2            nlme_3.1-170          
+    #>  [94] cli_3.6.6              rappdirs_0.3.4         spatstat.sparse_3.2-0 
+    #>  [97] spam_2.11-4            viridisLite_0.4.3      uwot_0.2.4            
+    #> [100] gtable_0.3.6           digest_0.6.39          progressr_1.0.0       
+    #> [103] ggrepel_0.9.8          htmlwidgets_1.6.4      farver_2.1.2          
+    #> [106] htmltools_0.5.9        lifecycle_1.0.5        httr_1.4.8            
+    #> [109] mime_0.13              MASS_7.3-66
 
 ------------------------------------------------------------------------
 

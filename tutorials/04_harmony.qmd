@@ -14,6 +14,7 @@ execute:
 knitr:
   opts_chunk:
     fig.path: "figs/04_harmony-"
+    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/04_harmony/"
     comment: "#>"
 ---
 
@@ -30,13 +31,31 @@ and sometimes exactly what you don't.
 This tutorial runs both on the same data so you can see the difference rather
 than take anyone's word for it.
 
+> **About this tutorial.** This is our own version of a published tutorial,
+> rewritten to run in the course container — see the credits at the bottom for
+> the original. The original is worth reading too. It is what you will find when
+> you search for this analysis, and comparing the two is good practice for the
+> thing you will do constantly in your own work: taking a tutorial written for
+> someone else's setup and making it run on yours.
+
 ## Before you start
 
-This tutorial needs about **24 GB of memory** and runs in **30–40 minutes**.
+We rendered this tutorial with:
 
 ```bash
-interactive -a cusanovichlab -n 8 -t 03:00:00 --mem=32G
+interactive -a cusanovichlab -n 8 -t 03:00:00
 ```
+
+`interactive` allocates memory per core — 4 GB each by default — so that is **32
+GB** in total. Note there is no `--mem` flag: memory comes from the number of
+cores you ask for. This one runs two integration methods on the same data.
+
+It took about **8 minutes** to run when we did it. Ask for more time than you
+expect to need — a job that hits its limit is killed part way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no error
+message — the session simply stops mid-command. If that ever happens to you,
+here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -53,7 +72,6 @@ library(dplyr)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "harmony")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -68,12 +86,6 @@ MY_DATA     <- file.path("/xdisk/darrenc/cmm_523", NETID, "Rdatalib")
 dir.create(MY_DATA, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(MY_DATA, SHARED_DATA, .libPaths()))
 
-knitr::opts_chunk$set(
-  cache.path = file.path(
-    Sys.getenv("CMM523_CACHE", unset = "/xdisk/darrenc/darrenc/cmm523_cache"),
-    "04_harmony/"
-  )
-)
 
 options(future.globals.maxSize = 8000 * 1024^2)
 WORK
@@ -243,13 +255,35 @@ panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "harmony_clusters"
 panc8 <- FindNeighbors(panc8, reduction = "integrated.cca", dims = 1:30)
 panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "cca_clusters")
 
-table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
+agreement <- table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
+agreement
 ```
 
-A near-diagonal table means the two methods found essentially the same
-structure. Off-diagonal mass means they disagree about which cells belong
-together — and those cells are worth looking at, because they are where the
-method choice actually changes your conclusions.
+The table is hard to read at a glance, so plot it. Scaling each row to sum to
+one shows, for each Harmony cluster, how its cells were split among the CCA
+clusters.
+
+```{r}
+#| label: cluster-agreement-heatmap
+#| fig-height: 7
+row_frac <- sweep(agreement, 1, rowSums(agreement), "/")
+pheatmap::pheatmap(
+  row_frac,
+  color = viridis::viridis(100),
+  cluster_rows = FALSE, cluster_cols = FALSE,
+  display_numbers = FALSE,
+  main = "Fraction of each Harmony cluster in each CCA cluster"
+)
+```
+
+If the two methods agree, each row has one bright square: every Harmony cluster
+maps onto a single CCA cluster. Do not expect those squares to fall on a
+diagonal. Each method numbers its clusters independently, so cluster 3 in one has
+no reason to be cluster 3 in the other.
+
+Rows where the colour is spread across several squares are where the methods
+disagree about which cells belong together — and those cells are worth looking
+at, because they are where the method choice actually changes your conclusions.
 
 ```{r}
 #| label: rejoin

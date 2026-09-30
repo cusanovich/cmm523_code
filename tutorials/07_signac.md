@@ -7,8 +7,8 @@
 - [Gene annotation](#gene-annotation)
 - [Building the object](#building-the-object)
 - [Quality control](#quality-control)
-- [Normalization and dimensional
-  reduction](#normalization-and-dimensional-reduction)
+- [Normalization and dimensionality
+  reduction](#normalization-and-dimensionality-reduction)
 - [Gene activity](#gene-activity)
 - [Coverage plots](#coverage-plots)
 - [Save your work](#save-your-work)
@@ -29,18 +29,38 @@ question per cell.
 
 Sparse, near-binary, high-dimensional data does not suit the tools built
 for RNA. Signac handles it with a different normalization (TF-IDF,
-borrowed from text search) and a different dimensional reduction (LSI
+borrowed from text search) and a different dimensionality reduction (LSI
 rather than PCA).
+
+> **About this tutorial.** This is our own version of a published
+> tutorial, rewritten to run in the course container — see the credits
+> at the bottom for the original. The original is worth reading too. It
+> is what you will find when you search for this analysis, and comparing
+> the two is good practice for the thing you will do constantly in your
+> own work: taking a tutorial written for someone else’s setup and
+> making it run on yours.
 
 ## Before you start
 
-This tutorial needs about **32 GB of memory** and runs in **45–60
-minutes**. It reads the fragment file several times, which is most of
-that time.
+We rendered this tutorial with:
 
 ``` bash
 interactive -a cusanovichlab -n 8 -t 03:00:00
 ```
+
+`interactive` allocates memory per core — 4 GB each by default — so that
+is **32 GB** in total. Note there is no `--mem` flag: memory comes from
+the number of cores you ask for.
+
+It took about **21 minutes** to run when we did it, most of that spent
+reading the fragment file, which it does several times. Ask for more
+time than you expect to need — a job that hits its limit is killed part
+way through.
+
+When R runs out of memory on the cluster, the scheduler kills it with no
+error message — the session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to
+check.
 
 ## Setup
 
@@ -61,7 +81,6 @@ set.seed(1234)
 # CHANGE THIS to your NetID.
 NETID <- "your_netid"
 
-if (nzchar(Sys.getenv("CMM523_NETID"))) NETID <- Sys.getenv("CMM523_NETID")
 
 WORK <- file.path("/xdisk/darrenc/cmm_523", NETID, "signac")
 dir.create(file.path(WORK, "output"), recursive = TRUE, showWarnings = FALSE)
@@ -71,14 +90,13 @@ SHARED <- "/groups/darrenc/cmm_523/references/pbmc_multiome"
 WORK
 ```
 
-    #> [1] "/xdisk/darrenc/cmm_523/darrenc/signac"
+    #> [1] "/xdisk/darrenc/cmm_523/your_netid/signac"
 
 ## The data
 
-10x Genomics Multiome on about 10,000 PBMCs — both RNA and ATAC measured
-in the same cells. This tutorial uses only the ATAC half; the [RNA+ATAC
-tutorial](08_rna_atac.md) comes back for the rest, so the download
-serves twice.
+In this tutorial we will use scATAC-seq data generated on about 10,000
+PBMCs with a 10x Genomics method (we’ll explain it better later in the
+course).
 
 Three files:
 
@@ -147,9 +165,9 @@ atac_counts[1:5, 1:3]
     #> chr1:267816-268196                  .                  .                  .
     #> chr1:586028-586373                  .                  .                  .
 
-Look at those values. Mostly zeros, with the occasional 1 or 2. That is
-what near-binary means in practice, and it is why the RNA toolkit does
-not transfer.
+Look at those values. The dots are zeros, so the preview we can see is
+all zeros! That is what sparse, near-binary data means in practice, and
+it is why the RNA toolkit does not transfer.
 
 ## Gene annotation
 
@@ -248,53 +266,32 @@ ATAC has its own QC metrics, and they measure things that have no RNA
 analogue.
 
 ``` r
-pbmc <- NucleosomeSignal(object = pbmc)
-
 # fast = FALSE keeps the per-position signal around the TSS, not just the
 # summary score. TSSPlot() needs it; the default (fast = TRUE) computes the
 # score and throws the profile away, and TSSPlot() then fails with
 # "Position enrichment matrix not present in assay".
 pbmc <- TSSEnrichment(object = pbmc, fast = FALSE)
 
-head(pbmc@meta.data[, c("nCount_peaks", "TSS.enrichment", "nucleosome_signal")], 5)
+head(pbmc@meta.data[, c("nCount_peaks", "TSS.enrichment")], 5)
 ```
 
-    #>                    nCount_peaks TSS.enrichment nucleosome_signal
-    #> AAACAGCCAAGGAATC-1        55550       5.099441         0.9045426
-    #> AAACAGCCAATCCCTT-1        20485       4.478054         0.8805970
-    #> AAACAGCCAATGCGCT-1        16674       4.299700         0.9619565
-    #> AAACAGCCACACTAAT-1         2007       4.523255         0.9644970
-    #> AAACAGCCACCAACCG-1         7658       3.753666         0.9200000
+    #>                    nCount_peaks TSS.enrichment
+    #> AAACAGCCAAGGAATC-1        55550       5.099441
+    #> AAACAGCCAATCCCTT-1        20485       4.478054
+    #> AAACAGCCAATGCGCT-1        16674       4.299700
+    #> AAACAGCCACACTAAT-1         2007       4.523255
+    #> AAACAGCCACCAACCG-1         7658       3.753666
 
-Note where these came from: both were computed from the fragment file,
-not read out of a metadata table. Cell Ranger ARC does not ship the
+Note where this came from: it was computed from the fragment file, not
+read out of a metadata table. Cell Ranger ARC does not ship the
 per-barcode QC csv that the older ATAC pipeline did, and relying on a
 file’s columns is fragile anyway — a renamed column gives you `NA`, and
 `NA < 0.05` quietly removes every cell in your dataset.
-
-What each metric is telling you:
-
-**Nucleosome signal** is the ratio of fragments longer than one
-nucleosome to those shorter. Tn5 cuts accessible DNA, so a good library
-shows clear laddering — sub-nucleosomal fragments, then mono-, then
-di-nucleosomal. A high ratio means poor chromatin digestion.
 
 **TSS enrichment** is the ratio of signal at transcription start sites
 to flanking background. Promoters are open in essentially every cell, so
 this works as close to a universal positive control: low TSS enrichment
 means the assay did not work in that cell, however many reads it has.
-
-``` r
-pbmc$nucleosome_group <- ifelse(pbmc$nucleosome_signal > 2, "NS > 2", "NS < 2")
-FragmentHistogram(object = pbmc, group.by = "nucleosome_group")
-```
-
-![](figs/07_signac-qc-fragment-histogram-1.png)
-
-That plot is worth dwelling on. The good group shows the nucleosomal
-laddering described above. The bad group does not — you can see the
-failure directly in the fragment length distribution rather than
-inferring it from a summary statistic.
 
 ``` r
 pbmc$high.tss <- ifelse(pbmc$TSS.enrichment > 2, "High", "Low")
@@ -303,12 +300,26 @@ TSSPlot(pbmc, group.by = "high.tss") + NoLegend()
 
 ![](figs/07_signac-qc-tss-1.png)
 
+This is the plot worth dwelling on. Each panel shows the average
+accessibility profile across all transcription start sites, centred on
+the TSS. In the high-scoring cells there is a sharp peak right at the
+TSS — the assay found the promoters, as it should. In the low-scoring
+cells that peak is flattened: the signal has degraded towards
+background, and those cells are telling you much less about where the
+chromatin is open. You can see the failure directly here, rather than
+inferring it from a single summary number.
+
+You will also see other ATAC QC metrics in the literature — nucleosome
+signal, for instance, which measures the fragment length pattern. We are
+not using it here. In practice it shifts only subtly between good and
+bad cells, and TSS enrichment separates them more clearly.
+
 ``` r
 VlnPlot(
   object = pbmc,
-  features = c("nCount_peaks", "TSS.enrichment", "nucleosome_signal"),
+  features = c("nCount_peaks", "TSS.enrichment"),
   pt.size = 0.1,
-  ncol = 3
+  ncol = 2
 )
 ```
 
@@ -318,17 +329,17 @@ Look at the distributions before choosing thresholds. A cut is only
 sensible relative to what it is being applied to.
 
 ``` r
-qc <- pbmc@meta.data[, c("nCount_peaks", "TSS.enrichment", "nucleosome_signal")]
+qc <- pbmc@meta.data[, c("nCount_peaks", "TSS.enrichment")]
 summary(qc)
 ```
 
-    #>   nCount_peaks    TSS.enrichment   nucleosome_signal
-    #>  Min.   :   404   Min.   : 1.419   Min.   :0.3808   
-    #>  1st Qu.: 14657   1st Qu.: 4.170   1st Qu.:0.8343   
-    #>  Median : 19915   Median : 4.469   Median :0.9315   
-    #>  Mean   : 20560   Mean   : 4.492   Mean   :0.9546   
-    #>  3rd Qu.: 24292   3rd Qu.: 4.769   3rd Qu.:1.0263   
-    #>  Max.   :627380   Max.   :20.113   Max.   :3.4878
+    #>   nCount_peaks    TSS.enrichment  
+    #>  Min.   :   404   Min.   : 1.419  
+    #>  1st Qu.: 14657   1st Qu.: 4.170  
+    #>  Median : 19915   Median : 4.469  
+    #>  Mean   : 20560   Mean   : 4.492  
+    #>  3rd Qu.: 24292   3rd Qu.: 4.769  
+    #>  Max.   :627380   Max.   :20.113
 
 ``` r
 cat("cells with any NA in a QC metric:", sum(!complete.cases(qc)), "\n")
@@ -339,22 +350,19 @@ cat("cells with any NA in a QC metric:", sum(!complete.cases(qc)), "\n")
 ``` r
 before <- ncol(pbmc)
 
-keep <- pbmc$nCount_peaks      > 1000 &
-        pbmc$nCount_peaks      < 100000 &
-        pbmc$nucleosome_signal < 2 &
-        pbmc$TSS.enrichment    > 1
+keep <- pbmc$nCount_peaks   > 1000 &
+        pbmc$nCount_peaks   < 100000 &
+        pbmc$TSS.enrichment > 1
 
 # What each criterion removes on its own. If one is discarding almost
 # everything, that is the threshold to question -- or the sign that the metric
 # was not computed the way you assumed.
 data.frame(
-  criterion = c("counts > 1000", "counts < 100000",
-                "nucleosome < 2", "TSS > 1"),
+  criterion = c("counts > 1000", "counts < 100000", "TSS > 1"),
   n_passing = c(
-    sum(pbmc$nCount_peaks      > 1000,   na.rm = TRUE),
-    sum(pbmc$nCount_peaks      < 100000, na.rm = TRUE),
-    sum(pbmc$nucleosome_signal < 2,      na.rm = TRUE),
-    sum(pbmc$TSS.enrichment    > 1,      na.rm = TRUE)
+    sum(pbmc$nCount_peaks   > 1000,   na.rm = TRUE),
+    sum(pbmc$nCount_peaks   < 100000, na.rm = TRUE),
+    sum(pbmc$TSS.enrichment > 1,      na.rm = TRUE)
   ),
   of_total = before
 )
@@ -363,15 +371,14 @@ data.frame(
     #>         criterion n_passing of_total
     #> 1   counts > 1000     11599    11831
     #> 2 counts < 100000     11816    11831
-    #> 3  nucleosome < 2     11743    11831
-    #> 4         TSS > 1     11831    11831
+    #> 3         TSS > 1     11831    11831
 
 ``` r
 pbmc <- pbmc[, which(keep)]
 cat("kept", ncol(pbmc), "of", before, "cells\n")
 ```
 
-    #> kept 11498 of 11831 cells
+    #> kept 11584 of 11831 cells
 
 ``` r
 # Fail here rather than several steps downstream. A filter that removes almost
@@ -382,11 +389,11 @@ pbmc
 ```
 
     #> An object of class Seurat 
-    #> 106056 features across 11498 samples within 1 assay 
+    #> 106056 features across 11584 samples within 1 assay 
     #> Active assay: peaks (106056 features, 0 variable features)
     #>  2 layers present: counts, data
 
-## Normalization and dimensional reduction
+## Normalization and dimensionality reduction
 
 Here is where ATAC diverges most sharply from RNA.
 
@@ -396,9 +403,9 @@ pbmc <- FindTopFeatures(pbmc, min.cutoff = "q0")
 pbmc <- RunSVD(pbmc)
 
 # How many components did we actually get? RunSVD() asks for 50 by default but
-# can return fewer, and asking for dimensions that do not exist fails later
-# with "subscript out of bounds" -- an error that points at RunUMAP rather than
-# at the real cause here.
+# can return fewer if something is wrong, and asking for dimensions that do not
+# exist fails later with "subscript out of bounds" -- an error that points at
+# RunUMAP rather than at the real cause here.
 n_lsi <- ncol(Embeddings(pbmc, "lsi"))
 n_lsi
 ```
@@ -422,10 +429,12 @@ DepthCor(pbmc)
 
 ![](figs/07_signac-depth-correlation-1.png)
 
-This plot exists because of a specific, well-known artefact: **the first
-LSI component usually captures sequencing depth rather than biology.**
-If the correlation at component 1 is strongly negative, exclude it —
-which is why everything below uses `dims = 2:30` rather than `1:30`.
+I wanted to show you this plot because of a specific, well-known
+artefact: **the first LSI component captures sequencing depth rather
+than biology.** This is because we do not center the data in LSI. It is
+probably best practice to always check, but we always ignore the first
+component for this reason, which is why everything below uses
+`dims = 2:30` rather than `1:30`.
 
 Nothing warns you about this. Include component 1 and your clusters will
 partly reflect how deeply each cell was sequenced, and the UMAP will
@@ -472,12 +481,12 @@ pbmc <- NormalizeData(
 dim(gene.activities)
 ```
 
-    #> [1] 19607 11498
+    #> [1] 19607 11584
 
-Be clear about what this is: a **proxy**, not a measurement.
+I want to be clear about what this is: a **proxy**, not a measurement.
 Accessibility over a gene body correlates with expression, loosely. A
 gene can be open and not transcribed. Gene activity is useful for
-recognizing cell types; it is not a substitute for measuring RNA.
+recognizing cell types; it is not a direct substitute for measuring RNA.
 
 ``` r
 DefaultAssay(pbmc) <- "RNA"
@@ -493,9 +502,9 @@ FeaturePlot(
 
 ![](figs/07_signac-gene-activity-plot-1.png)
 
-Recognizable: `MS4A1` for B cells, `CD3D` for T cells, `LYZ` for
-monocytes. The signal is noisier than the RNA equivalent, which is what
-you should expect from a proxy.
+These are known markers for expected cell types: `MS4A1` for B cells,
+`CD3D` for T cells, `LYZ` for monocytes. The signal is noisier than the
+RNA equivalent, which is what you should expect from a proxy.
 
 ## Coverage plots
 
@@ -507,23 +516,6 @@ DefaultAssay(pbmc) <- "peaks"
 
 CoveragePlot(
   object = pbmc,
-  region = "MS4A1",
-  extend.upstream = 5000,
-  extend.downstream = 5000
-)
-```
-
-![](figs/07_signac-coverage-1.png)
-
-Each row is a cluster, and the height is accessibility across the locus.
-You are looking at the regulatory landscape of a gene, cell type by cell
-type: which promoter is open, which enhancers are used, and by whom. A
-`FeaturePlot` tells you a gene is on in B cells. This tells you *where*
-the chromatin is open to make that happen.
-
-``` r
-CoveragePlot(
-  object = pbmc,
   region = "CD3D",
   extend.upstream = 5000,
   extend.downstream = 5000
@@ -532,13 +524,32 @@ CoveragePlot(
 
 ![](figs/07_signac-coverage-cd3-1.png)
 
+Each row is a cluster, and the height is accessibility across the locus.
+You are looking at the regulatory landscape of a gene, cell type by cell
+type: which promoter is open, which enhancers are used, and by whom. A
+`FeaturePlot` tells you a gene is on in T cells. This tells you *where*
+the chromatin is open to make that happen.
+
+Here is the same view for a B cell marker:
+
+``` r
+CoveragePlot(
+  object = pbmc,
+  region = "MS4A1",
+  extend.upstream = 5000,
+  extend.downstream = 5000
+)
+```
+
+![](figs/07_signac-coverage-1.png)
+
 ## Save your work
 
 ``` r
 saveRDS(pbmc, file = file.path(WORK, "output", "pbmc_atac.rds"))
 ```
 
-Keep this. The RNA+ATAC integration tutorial starts from it.
+Keep this. We’ll use it in a later tutorial.
 
 ## Session information
 
