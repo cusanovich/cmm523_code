@@ -8,3 +8,4 @@ container/*.log
 container/slurm-*.out
 tutorials/*.log
 tutorials/slurm-*.out
+tutorials/*_cache/
