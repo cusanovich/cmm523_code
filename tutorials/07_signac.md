@@ -36,7 +36,7 @@ rather than PCA).
 > tutorial, rewritten to run in the course container — see the credits
 > at the bottom for the original. The original is worth reading too. It
 > is what you will find when you search for this analysis, and comparing
-> the two is good practice for the thing you will do constantly in your
+> the two is good practice for something you will constantly do in your
 > own work: taking a tutorial written for someone else’s setup and
 > making it run on yours.
 
@@ -52,15 +52,16 @@ interactive -a cusanovichlab -n 8 -t 03:00:00
 is **32 GB** in total. Note there is no `--mem` flag: memory comes from
 the number of cores you ask for.
 
-It took about **21 minutes** to run when we did it, most of that spent
-reading the fragment file, which it does several times. Ask for more
-time than you expect to need — a job that hits its limit is killed part
-way through.
+The code alone takes about **29 minutes** to run, most of that spent
+reading the fragment file, which it does several times. We obviously
+expect you to spend more time on it than that. Plan for at least 60
+minutes. And always ask for more time than you expect to need. A job
+that hits its limit is killed part way through.
 
-When R runs out of memory on the cluster, the scheduler kills it with no
-error message — the session simply stops mid-command. If that ever
-happens to you, here or anywhere else, memory is the first thing to
-check.
+Also note that when R runs out of memory on the cluster, the scheduler
+kills it with no error message. The session simply stops mid-command. If
+that ever happens to you, here or anywhere else, memory is the first
+thing to check.
 
 ## Setup
 

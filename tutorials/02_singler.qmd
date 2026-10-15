@@ -10,11 +10,16 @@ format:
 execute:
   warning: false
   message: false
-  cache: true
+  # Caching is OFF. knitr re-runs a chunk only when that chunk's own code
+  # changes; it has no idea that an object the chunk depends on was rebuilt
+  # upstream. An edit to the reference therefore left a later chunk restoring
+  # a stale object from cache, and the rendered figures showed old and new
+  # results side by side. These tutorials run in minutes. Correctness is worth
+  # more than the minutes.
+  cache: false
 knitr:
   opts_chunk:
     fig.path: "figs/02_singler-"
-    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/02_singler/"
     comment: "#>"
 ---
 
@@ -32,9 +37,9 @@ to check whether your clustering is carving the data at sensible joints.
 > **About this tutorial.** This is our own version of a published tutorial,
 > rewritten to run in the course container — see the credits at the bottom for
 > the original. The original is worth reading too. It is what you will find when
-> you search for this analysis, and comparing the two is good practice for the
-> thing you will do constantly in your own work: taking a tutorial written for
-> someone else's setup and making it run on yours.
+> you search for this analysis, and comparing the two is good practice for
+> something you will constantly do in your own work: taking a tutorial written
+> for someone else's setup and making it run on yours.
 
 ## Before you start
 
@@ -49,12 +54,14 @@ GB** in total. Note there is no `--mem` flag: memory comes from the number of
 cores you ask for. The default of 1 core and 4 GB is not enough: the dataset is
 large before we subsample it.
 
-It took about **2 minutes** to run when we did it. Ask for more time than you
-expect to need — a job that hits its limit is killed part way through.
+The code alone takes about **3 minutes** to run, but we obviously expect you
+to spend more time on it than that. Plan for at least 30 minutes. And always
+ask for more time than you expect to need. A job that hits its limit is killed
+part way through.
 
-When R runs out of memory on the cluster, the scheduler kills it with no error
-message — the session simply stops mid-command. If that ever happens to you,
-here or anywhere else, memory is the first thing to check.
+Also note that when R runs out of memory on the cluster, the scheduler kills it
+with no error message. The session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -82,8 +89,15 @@ WORK
 
 ## Get a reference
 
-`celldex` provides several curated reference datasets. The Human Primary Cell
-Atlas is a good general-purpose starting point for blood and immune data.
+`celldex` provides several curated reference datasets, and choosing among them
+matters more than any argument you will pass to `SingleR()`. The reference
+defines the entire vocabulary of answers available: a cell type the reference
+does not describe cannot be assigned, no matter how clearly it is present in
+your data.
+
+Our sample is PBMCs, so we use a reference built from blood. `MonacoImmuneData`
+is RNA-seq of sorted immune populations from peripheral blood, which is as
+close a match to this experiment as celldex offers.
 
 The first call downloads and caches the reference, which takes a minute. The
 cache location is set by the container, so it lands on `/xdisk` rather than in
@@ -91,31 +105,23 @@ your home directory.
 
 ```{r}
 #| label: reference
-ref <- celldex::HumanPrimaryCellAtlasData()
+ref <- celldex::MonacoImmuneData()
 ref
 ```
 
-Each reference has two label columns. `label.main` is coarse (T cell, B cell,
-monocyte); `label.fine` is granular (naive CD4 T, memory CD8 T, and so on).
-Which you want depends on the question.
+Each reference has two label columns. `label.main` is coarse; `label.fine` is
+granular. Which you want depends on the question.
 
 ```{r}
 #| label: reference-labels
-table(ref$label.main)[1:15]
-```
-
-The Human Primary Cell Atlas covers many tissues, most of which are irrelevant
-for PBMCs. Subsetting to the relevant lineages makes the assignment both faster
-and more accurate — a reference full of hepatocytes gives SingleR opportunities
-to be wrong in uninteresting ways.
-
-```{r}
-#| label: subset-reference
-keep <- grepl("DC|B_cell|T_cells|Monocyte|NK_cell|^HSC_CD34", ref$label.main)
-ref <- ref[, keep]
-
 table(ref$label.main)
 ```
+
+Every one of those is a blood population, which is the point. A broad atlas
+like `HumanPrimaryCellAtlasData()` spans many tissues, and handing SingleR
+hepatocytes and keratinocytes as options for a blood sample gives it
+opportunities to be wrong in uninteresting ways — with one of those, you would
+subset to the relevant lineages first. Here there is nothing to remove.
 
 ## Get some data to annotate
 
@@ -128,32 +134,77 @@ sce <- scRNAseq::KotliarovPBMCData()
 sce
 ```
 
-That is around 58,000 cells — more than we need to demonstrate anything here,
-and enough to exhaust a modest memory allocation. So let's subsample it.
+That is around 58,000 cells. Before we subsample or annotate anything, it gets
+the same quality control you applied to pbmc3k in the
+[Seurat intro](01_seurat_intro.md) — QC comes first, every time, and the point
+of doing it again here is that it should start feeling automatic.
+
+```{r}
+#| label: to-seurat
+pbmc <- CreateSeuratObject(counts = counts(sce), project = "kotliarov")
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+pbmc
+```
+
+```{r}
+#| label: qc-plot
+#| fig-width: 12
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+        ncol = 3, pt.size = 0) + NoLegend()
+```
+
+Look at the distributions before you pick thresholds. Cells with very few
+detected genes are usually empty or dying; cells with far more than the bulk of
+the population are often two cells in one droplet; and a high mitochondrial
+fraction indicates a cell that was damaged or lysing when it was captured.
+
+Notice that the feature distribution is not one smooth hump. There is the main
+population, and below it a separate smaller mode — the low-quality cells we
+want to remove. Where exactly you cut between them is a judgment call, and the
+conventional 200 lands partway into that lower mode rather than cleanly beneath
+it. A somewhat higher threshold would be equally defensible here. This is the
+reason to plot before filtering rather than copying numbers from a vignette.
+
+```{r}
+#| label: qc-filter
+pbmc <- subset(
+  pbmc,
+  subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 10
+)
+pbmc
+```
+
+Those numbers are a starting point borrowed from the Seurat PBMC vignette, not
+constants. They are reasonable for 10x PBMC data and wrong for plenty of other
+experiments — a tissue with large, transcriptionally active cells will have
+many legitimate cells above 2500 features, and cardiac or muscle tissue runs
+high on mitochondrial content for real biological reasons. Read your own
+distributions and justify your own cutoffs.
+
+Now subsample, for runtime rather than for quality:
 
 ```{r}
 #| label: subsample
 set.seed(42)
-sce <- sce[, sample(ncol(sce), 5000)]
-dim(sce)
+pbmc <- pbmc[, sample(ncol(pbmc), 10000)]
+pbmc <- NormalizeData(pbmc)
+pbmc
 ```
+
+How far down to subsample is a real trade-off. SingleR's per-cluster mode pools
+the cells in each cluster before scoring, so the smaller the subsample, the
+fewer cells stand behind each pooled profile and the noisier those scores get.
+Ten thousand keeps runtime and memory reasonable while leaving enough cells in
+the smaller clusters to say something about them.
 
 Subsampling for a tutorial is fine. Subsampling for an analysis is a decision
 you should make deliberately and report — rare populations are exactly the ones
 a random subsample is most likely to lose.
 
-SingleR expects log-normalized expression. The dataset arrives as a
-`SingleCellExperiment`, but since the rest of this course works in Seurat, we
-will convert it and normalize the Seurat way. SingleR does not care which
-object the matrix came from.
-
-```{r}
-#| label: to-seurat
-pbmc <- CreateSeuratObject(counts = counts(sce), project = "kotliarov")
-pbmc <- NormalizeData(pbmc)
-
-pbmc
-```
+SingleR expects log-normalized expression, which `NormalizeData()` above has
+produced. SingleR does not care that the matrix started life as a
+`SingleCellExperiment`.
 
 ## Run SingleR
 
@@ -164,16 +215,24 @@ norm_counts <- LayerData(pbmc, assay = "RNA", layer = "data")
 pred.main <- SingleR(
   test = norm_counts,
   ref = ref,
-  labels = ref$label.main,
-  de.method = "wilcox"
+  labels = ref$label.main
 )
 
 table(pred.main$pruned.labels, useNA = "ifany")
 ```
 
-The `de.method = "wilcox"` argument tells SingleR to pick marker genes by
-Wilcoxon test rather than the default t-test. This is the recommended setting
-for single-cell references.
+Note what we did *not* pass. SingleR chooses marker genes for each label before
+scoring anything, and `de.method` controls how. The default, `"classic"`, ranks
+genes by log fold change and is built for bulk references — which is what
+Monaco is, RNA-seq of sorted populations with only a handful of samples per
+label. The alternatives, `"wilcox"` and `"t"`, are for single-cell references,
+where each label has hundreds or thousands of cells to run a test across.
+
+The mismatch matters more than it sounds like it would. Several Monaco labels
+rest on four sorted samples; ask for a Wilcoxon test on four observations and
+you get unstable markers, and since those markers are what the correlation
+scores are computed over, poor marker selection turns into confident wrong
+labels downstream. Match the method to the reference.
 
 `pruned.labels` is the important column. SingleR assigns every cell a label, but
 then prunes assignments where the score is not meaningfully better than the
@@ -208,8 +267,7 @@ plotDeltaDistribution(pred.main, ncol = 4, dots.on.top = FALSE)
 pred.fine <- SingleR(
   test = norm_counts,
   ref = ref,
-  labels = ref$label.fine,
-  de.method = "wilcox"
+  labels = ref$label.fine
 )
 
 head(sort(table(pred.fine$pruned.labels, useNA = "ifany"), decreasing = TRUE), 15)
@@ -260,33 +318,192 @@ The single most useful summary is the dominant label per cluster:
 apply(tab, 1, function(x) names(which.max(x)))
 ```
 
+## Annotating clusters instead of cells
+
+Taking the most common label in each cluster, as we just did, is a reasonable
+summary but a crude one — it throws away how confident each call was. SingleR
+can do the job properly. Pass `clusters=` and it pools the expression profiles
+of all cells in a cluster before scoring, then returns one label per cluster.
+
+```{r}
+#| label: singler-cluster
+pred.cluster <- SingleR(
+  test     = norm_counts,
+  ref      = ref,
+  labels   = ref$label.main,
+  clusters = pbmc$seurat_clusters
+)
+
+pred.cluster[, c("labels", "pruned.labels")]
+```
+
+Pooling first means each score is computed from hundreds or thousands of cells
+rather than one, so the noise that makes individual assignments wobble largely
+cancels out. The cost is that a cluster containing two cell types gets one
+label and you lose the evidence that anything was mixed.
+
+That trade-off is the real choice here. Per-cell labels are a diagnostic: the
+disagreement *within* a cluster is information, and a cluster that comes back
+speckled is telling you either that it is under-clustered or that the reference
+cannot separate what is in it. Per-cluster labels are what you want once you
+have settled on a clustering and need a name for each group.
+
+Note the two columns printed above. `labels` is the call SingleR made for
+every cluster. `pruned.labels` is the same thing with the calls SingleR did not
+trust replaced by `NA`. Keep both — the difference between them is the
+interesting part.
+
+```{r}
+#| label: map-cluster-labels
+i <- match(pbmc$seurat_clusters, rownames(pred.cluster))
+
+pbmc$SingleR_cluster        <- pred.cluster$labels[i]
+pbmc$SingleR_cluster_pruned <- pred.cluster$pruned.labels[i]
+```
+
 ## Labels on a UMAP
 
 ```{r}
 #| label: umap-labels
-#| fig-height: 7
+#| fig-width: 12
+#| fig-height: 10
 pbmc <- RunUMAP(pbmc, dims = 1:20)
 
 p1 <- DimPlot(pbmc, group.by = "seurat_clusters", label = TRUE) +
   NoLegend() + ggtitle("Seurat clusters")
 p2 <- DimPlot(pbmc, group.by = "SingleR_main", label = TRUE, label.size = 3) +
-  NoLegend() + ggtitle("SingleR labels")
+  NoLegend() + ggtitle("SingleR, per cell")
+p3 <- DimPlot(pbmc, group.by = "SingleR_cluster", label = TRUE, label.size = 3) +
+  NoLegend() + ggtitle("SingleR, per cluster (all calls)")
+p4 <- DimPlot(pbmc, group.by = "SingleR_cluster_pruned",
+              label = TRUE, label.size = 3) +
+  NoLegend() + ggtitle("SingleR, per cluster (pruned)")
 
-p1 + p2
+(p1 + p2) / (p3 + p4)
 ```
 
-One detail worth noting in the code above: we pulled the expression matrix with
-`LayerData(pbmc, assay = "RNA", layer = "data")`. If you find older code using
-`GetAssayData(slot = "data")`, that is the Seurat 4 spelling — in Seurat 5 the
-term is "layer" rather than "slot", and the old argument is deprecated.
+Read these as a sequence. The per-cell panel shows where individual cells were
+ambiguous — speckling means either the cluster holds more than one thing or the
+reference cannot separate what is in it. The two per-cluster panels are the
+same analysis shown twice: bottom left is every call SingleR made, bottom right
+is those calls with the untrusted ones greyed out.
+
+Grey is not a cell type and not an error. It is a cluster whose label SingleR
+declined to stand behind, and the panel beside it shows what that label would
+have been.
+
+Seurat numbers clusters by size, so the highest numbers are the smallest
+clusters, and in general it is those that give SingleR the most trouble. Had we
+skipped the QC step above, more clusters would have come back unlabeled —
+filtering removed much of the problem before annotation ever ran, which is the
+argument for doing QC first in one picture.
+
+When a cluster does come back grey, the usual explanations are: a cell type
+your reference does not describe, collisions (two cells in one droplet), a
+cluster that is really two cell types the clustering did not separate, cycling
+cells whose proliferation signature swamps their identity, or low-quality cells
+that QC should have caught. The annotation cannot distinguish these for you.
+Markers can, and that is the work: plot canonical markers for whatever you
+suspect and see whether the cluster supports it.
+
+Counts are a cheap first look while you decide what to suspect — high for
+collisions, low for dying cells — though they settle nothing on their own, and
+a small cluster of resting lymphocytes will look RNA-poor for entirely
+legitimate reasons.
+
+```{r}
+#| label: cluster-counts
+#| fig-width: 10
+VlnPlot(pbmc, features = "nCount_RNA", group.by = "seurat_clusters",
+        pt.size = 0) + NoLegend()
+```
+
+One structural note on the pruning itself. SingleR flags assignments whose
+margin over the alternatives looks like an outlier. Per cell, that test sees
+thousands of values. Per cluster, it sees one value per cluster — a dozen or so
+here — so it is a blunter instrument, and a borderline cluster could go either
+way. Read the two per-cluster panels together rather than relying on the pruned
+one alone.
+
+## Checking the annotation against what you expect
+
+An annotation that looks tidy is not the same as an annotation that is right.
+The check worth building into your habits is to pick a population you know
+should be in the sample and confirm it is there.
+
+Dendritic cells are a good test for PBMCs: they are a normal constituent at
+roughly one or two percent, and they are close enough to monocytes that a
+reference built from the wrong tissue will quietly fold them in. Canonical
+markers are `FCER1A`, `CD1C` and `CLEC9A` for conventional DCs and `LILRA4`
+for plasmacytoid.
+
+```{r}
+#| label: dc-markers-present
+dc_markers <- intersect(c("FCER1A", "CD1C", "CLEC9A", "LILRA4"), rownames(pbmc))
+dc_markers
+```
+
+```{r}
+#| label: dc-featureplot
+#| fig-width: 12
+#| fig-height: 10
+FeaturePlot(pbmc, features = dc_markers, ncol = 2, order = TRUE)
+```
+
+Now compare where those markers sit against what SingleR called those cells,
+keeping the pruned cells as their own group rather than letting them drop out
+of the plot:
+
+```{r}
+#| label: dc-by-label
+#| fig-width: 12
+#| fig-height: 10
+pbmc$annotation <- ifelse(is.na(pbmc$SingleR_main),
+                          "unlabeled", pbmc$SingleR_main)
+
+table(pbmc$annotation)
+
+VlnPlot(pbmc, features = dc_markers, group.by = "annotation",
+        ncol = 2, pt.size = 0)
+```
+
+That is what we want to see: the markers are elevated in the dendritic cell
+group and essentially flat everywhere else, and the label accounts for about
+two percent of cells — right where a PBMC sample should land. The annotation
+survives the check.
+
+Notice that `FCER1A` and `CD1C` (conventional DCs) and `LILRA4` (plasmacytoid
+DCs) all come up in the same group. Monaco's `label.main` treats dendritic
+cells as one category; `label.fine` separates the subtypes. Which you want
+depends on whether that distinction matters for your question.
+
+Had this gone the other way, the two failure modes look different and mean
+different things. Markers lighting up inside the monocytes would mean the
+reference could not separate the two and your DCs had been silently absorbed
+under a confident wrong label. Markers lighting up in `unlabeled` would mean
+SingleR saw that those cells matched nothing well and declined to name them —
+less convenient, but honest, and much the better outcome of the two.
+
+One more thing worth noticing, because it is the same check running in
+reverse: a small number of cells came back as `Progenitors`. Haematopoietic
+progenitors are not a normal constituent of peripheral blood, so a label
+appearing where you did not expect one deserves the same scrutiny as a label
+going missing. Given the size of that cluster and its unusually high counts,
+collisions would be the first thing to rule out.
+
+This is the habit worth taking from the tutorial. An automated annotation tells
+you what the reference thought. Checking it against what you know should and
+should not be in your sample is how you find out whether the reference was any
+good.
 
 ## A caution about references
 
-SingleR is only as good as its reference, and this is not a minor caveat. If
-your cells are a type the reference does not contain, SingleR will still assign
-them a label — the closest available match, confidently or not. Tumor cells
-annotated against a healthy-tissue reference are a classic way to get
-nonsense that looks authoritative.
+We chose a blood reference for a blood sample, which is why this worked. Get
+that wrong and SingleR does not complain — a cell type the reference does not
+contain still gets a label, the closest available match, assigned with no
+outward sign that the right answer was never on the menu. Tumor cells
+annotated against a healthy-tissue reference are the classic way to produce
+nonsense that reads as authoritative.
 
 Always check the delta distribution, always look at what fraction of cells got
 pruned to `NA`, and treat a label as a hypothesis rather than a fact.

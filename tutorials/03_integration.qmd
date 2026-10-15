@@ -10,11 +10,16 @@ format:
 execute:
   warning: false
   message: false
-  cache: true
+  # Caching is OFF. knitr re-runs a chunk only when that chunk's own code
+  # changes; it has no idea that an object the chunk depends on was rebuilt
+  # upstream. An edit to the reference therefore left a later chunk restoring
+  # a stale object from cache, and the rendered figures showed old and new
+  # results side by side. These tutorials run in minutes. Correctness is worth
+  # more than the minutes.
+  cache: false
 knitr:
   opts_chunk:
     fig.path: "figs/03_integration-"
-    cache.path: "/xdisk/darrenc/darrenc/cmm523_cache/03_integration/"
     comment: "#>"
 ---
 
@@ -31,9 +36,9 @@ annotations from a labeled reference onto unlabeled query cells.
 > **About this tutorial.** This is our own version of a published tutorial,
 > rewritten to run in the course container — see the credits at the bottom for
 > the original. The original is worth reading too. It is what you will find when
-> you search for this analysis, and comparing the two is good practice for the
-> thing you will do constantly in your own work: taking a tutorial written for
-> someone else's setup and making it run on yours.
+> you search for this analysis, and comparing the two is good practice for
+> something you will constantly do in your own work: taking a tutorial written
+> for someone else's setup and making it run on yours.
 
 ## Before you start
 
@@ -48,12 +53,14 @@ GB** in total. Note there is no `--mem` flag: memory comes from the number of
 cores you ask for. Integration holds several copies of the data in memory at
 once, so it is more demanding than the single-sample workflow.
 
-It took about **8 minutes** to run when we did it. Ask for more time than you
-expect to need — a job that hits its limit is killed part way through.
+The code alone takes about **5 minutes** to run, but we obviously expect you
+to spend more time on it than that. Plan for at least 30 minutes. And always
+ask for more time than you expect to need. A job that hits its limit is killed
+part way through.
 
-When R runs out of memory on the cluster, the scheduler kills it with no error
-message — the session simply stops mid-command. If that ever happens to you,
-here or anywhere else, memory is the first thing to check.
+Also note that when R runs out of memory on the cluster, the scheduler kills it
+with no error message. The session simply stops mid-command. If that ever
+happens to you, here or anywhere else, memory is the first thing to check.
 
 ## Setup
 
@@ -160,12 +167,13 @@ panc8 <- RunUMAP(panc8, dims = 1:30, reduction = "pca",
 ```{r}
 #| label: unintegrated-plot
 #| fig-width: 12
+# Each panel keeps its own legend. Collecting them into one strip puts both
+# legends beside the right-hand plot, where it is not clear which is which.
 DimPlot(panc8, reduction = "umap.unintegrated",
-        group.by = c("tech", "celltype"), label = FALSE) +
-  plot_layout(guides = "collect")
+        group.by = c("tech", "celltype"), label = FALSE)
 ```
 
-This is the problem, drawn. Cells of the same type sit in different places
+This image encapsulates the problem. Cells of the same type sit in different places
 depending on which technology produced them. Any clustering here recovers
 technology, not biology.
 
@@ -205,8 +213,7 @@ panc8 <- RunUMAP(panc8, reduction = "integrated.cca", dims = 1:30,
 #| label: integrated-plot
 #| fig-width: 12
 DimPlot(panc8, reduction = "umap.cca",
-        group.by = c("tech", "celltype"), label = FALSE) +
-  plot_layout(guides = "collect")
+        group.by = c("tech", "celltype"), label = FALSE)
 ```
 
 Compare against the unintegrated version above. Technologies now overlap; cell

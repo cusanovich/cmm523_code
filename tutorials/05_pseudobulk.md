@@ -41,7 +41,7 @@ treat samples as the unit of replication — because they are.
 > tutorial, rewritten to run in the course container — see the credits
 > at the bottom for the original. The original is worth reading too. It
 > is what you will find when you search for this analysis, and comparing
-> the two is good practice for the thing you will do constantly in your
+> the two is good practice for something you will constantly do in your
 > own work: taking a tutorial written for someone else’s setup and
 > making it run on yours.
 
@@ -58,14 +58,15 @@ is **16 GB** in total. Note there is no `--mem` flag: memory comes from
 the number of cores you ask for. Pseudobulk profiles are small: the
 heavy lifting collapses ten thousand cells into a few dozen columns.
 
-It took about **2 minutes** to run when we did it. Ask for more time
-than you expect to need — a job that hits its limit is killed part way
-through.
+The code alone takes about **2 minutes** to run, but we obviously expect
+you to spend more time on it than that. Plan for at least 30 minutes.
+And always ask for more time than you expect to need. A job that hits
+its limit is killed part way through.
 
-When R runs out of memory on the cluster, the scheduler kills it with no
-error message — the session simply stops mid-command. If that ever
-happens to you, here or anywhere else, memory is the first thing to
-check.
+Also note that when R runs out of memory on the cluster, the scheduler
+kills it with no error message. The session simply stops mid-command. If
+that ever happens to you, here or anywhere else, memory is the first
+thing to check.
 
 ## Setup
 
@@ -570,11 +571,11 @@ head(design)
     #> 5            0
     #> 6            0
 
-Read the formula rather than the code. `~ cluster + donor` fits a
-baseline for each donor and estimates the cluster effects on top of
-that. A gene that simply differs between people is absorbed by the donor
-terms, and does not contaminate the comparison between cell types. That
-is what a cell-level test cannot do.
+Focus on the formula for a minute. `~ cluster + donor` fits a baseline
+for each donor and estimates the cluster effects on top of that. A gene
+that simply differs between people is absorbed by the donor terms, and
+does not contaminate the comparison between cell types. That is what a
+cell-level test cannot do.
 
 ## Dispersion
 

@@ -30,7 +30,7 @@ rather than take anyone’s word for it.
 > tutorial, rewritten to run in the course container — see the credits
 > at the bottom for the original. The original is worth reading too. It
 > is what you will find when you search for this analysis, and comparing
-> the two is good practice for the thing you will do constantly in your
+> the two is good practice for something you will constantly do in your
 > own work: taking a tutorial written for someone else’s setup and
 > making it run on yours.
 
@@ -47,14 +47,15 @@ is **32 GB** in total. Note there is no `--mem` flag: memory comes from
 the number of cores you ask for. This one runs two integration methods
 on the same data.
 
-It took about **8 minutes** to run when we did it. Ask for more time
-than you expect to need — a job that hits its limit is killed part way
-through.
+The code alone takes about **5 minutes** to run, but we obviously expect
+you to spend more time on it than that. Plan for at least 30 minutes.
+And always ask for more time than you expect to need. A job that hits
+its limit is killed part way through.
 
-When R runs out of memory on the cluster, the scheduler kills it with no
-error message — the session simply stops mid-command. If that ever
-happens to you, here or anywhere else, memory is the first thing to
-check.
+Also note that when R runs out of memory on the cluster, the scheduler
+kills it with no error message. The session simply stops mid-command. If
+that ever happens to you, here or anywhere else, memory is the first
+thing to check.
 
 ## Setup
 
@@ -281,7 +282,7 @@ panc8 <- FindClusters(panc8, resolution = 0.5, cluster.name = "cca_clusters")
     #> Running Louvain algorithm...
     #> Maximum modularity in 10 random starts: 0.9191
     #> Number of communities: 14
-    #> Elapsed time: 2 seconds
+    #> Elapsed time: 3 seconds
 
 ``` r
 agreement <- table(harmony = panc8$harmony_clusters, cca = panc8$cca_clusters)
@@ -341,7 +342,7 @@ panc8 <- JoinLayers(panc8)
 
 ## Which should you use?
 
-There is no general answer, which is itself the point worth taking away.
+There is no general answer, which is sort of the point.
 
 Harmony is fast and scales to very large datasets. It corrects
 aggressively, which helps with strong batch effects and hurts when your

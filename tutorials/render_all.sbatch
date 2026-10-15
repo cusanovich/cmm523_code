@@ -36,6 +36,7 @@ TUTORIALS=(
   06_trajectory
   07_signac
   08_rna_atac
+  09_wnn
 )
 
 echo "=========================================="

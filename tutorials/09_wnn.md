@@ -43,7 +43,7 @@ open.
 > tutorial, rewritten to run in the course container — see the credits
 > at the bottom for the original. The original is worth reading too. It
 > is what you will find when you search for this analysis, and comparing
-> the two is good practice for the thing you will do constantly in your
+> the two is good practice for something you will constantly do in your
 > own work: taking a tutorial written for someone else’s setup and
 > making it run on yours.
 
@@ -58,13 +58,15 @@ batch job with 16 cores:
 ```
 
 That is **64 GB** of memory, since memory comes with the cores at 4 GB
-each. When we rendered it, the whole tutorial took about 75 minutes,
-most of it in the chromVAR step.
+each. The code alone takes about 90 minutes, most of it in the chromVAR
+step.
 
-Do not run this interactively and wait. Write a batch script, submit it,
-and come back. If the job dies partway with a confusing error from deep
-inside a package, check whether it ran out of memory before anything
-else — the scheduler log will say so.
+I would not recommend you run this interactively and wait. This is an
+excellent opportunity to write a batch script, submit it, and come back.
+If the job dies partway with a confusing error from deep inside a
+package, check whether it ran out of memory before anything else — the
+scheduler log will say so. If you want to run it interactively, plan for
+about 2 hours.
 
 ## Setup
 
