@@ -10,6 +10,25 @@ August 2026 and will need bumping before the next run. See
 
 ---
 
+## Run the pre-flight check first
+
+Before touching anything, confirm last year's setup is still intact:
+
+```bash
+cd ~/ccsgab_projects/cmm523_code/container
+sbatch preflight_cmm523.sbatch
+```
+
+Two to five minutes. It is read-only — it builds nothing and downloads nothing.
+It verifies the container images exist and still load every course package, the
+recipes are staged and student-readable, the reference mirror is complete, the
+upstream pins (Bioconductor tag, Posit snapshot, Quarto release) are still
+published, and the data URLs the tutorials fetch still resolve.
+
+Run it *before* the version bump below, not after. If something has rotted
+since last year you want to know that first, so you are not debugging a broken
+pin and a broken bump at the same time.
+
 ## How the course is built
 
 Four decisions shape everything else. They were made to stop the annual
@@ -72,6 +91,9 @@ container/
   build_layer.sbatch              build any recipe as a batch job
   fetch_references.sbatch         mirror course datasets to /groups
   rserver_cmm523.sh               RStudio Server from a container, in OOD Desktop
+container/
+  preflight_cmm523.sh             read-only check that last year's setup holds
+  preflight_cmm523.sbatch         submit it as a job
 tutorials/
   NN_name.qmd                     source
   NN_name.md                      rendered — this is what students read
@@ -138,7 +160,8 @@ than a budget.
 
 ## Before the next run
 
-Steps 1–5 are the annual version bump; the rest is verification.
+Run the pre-flight check first (above). Then: steps 1–5 are the annual version
+bump, and the rest is verification.
 
 1. **Pick the Bioconductor release.** Releases land in April and October. Pin
    whichever is current when the semester starts so it cannot change
@@ -272,7 +295,3 @@ connection, not the package object.
   `RunChromVAR`, `JASPAR2020`, and `slot=`, all of which now error. A student
   who finds them first will get failures that have nothing to do with the
   course. Move them into `Fall2025/` or delete them.
-- **A pre-flight check, like the one CMM 522 has.** Less urgent here because the
-  container pins most of what would otherwise drift, but a script that confirms
-  the base image still builds, the layer chain still bootstraps, and the
-  reference mirror is intact would turn steps 3–8 above into one job.

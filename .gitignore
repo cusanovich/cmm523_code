@@ -9,3 +9,4 @@ container/slurm-*.out
 tutorials/*.log
 tutorials/slurm-*.out
 tutorials/*_cache/
+container/preflight_*.log
